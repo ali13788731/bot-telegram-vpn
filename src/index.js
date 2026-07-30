@@ -7,6 +7,7 @@ const PIC_UPDATE_SUB = "https://example.com/update_sub_tutorial.jpg";
 const PIC_V2BOX_SETUP = "https://example.com/v2box_setup_tutorial.jpg";
 const CF_ADMIN_PATH = "my-secret-admin-9988";
 const CF_ADMIN_TOKEN = "admin12345";
+const FIXED_TUNNEL_LINK = "https://my-secure-tu0nnel.signalalizahra.workers.dev/sub?target=mixed&token=e72e4985b47c12443f0dcd9e3caa80b4"; // لینک اتصال کمکی
 
 // قیمت‌گذاری پلن‌ها (به تومان)
 const PLAN_PRICES = {
@@ -113,6 +114,7 @@ async function updateCloudflareExp(domain, daysToAdd, hoursToAdd = 0, singleUser
     
     let baseDate = new Date(); 
     
+    // نکته: اگر انقضا در آینده باشد، این قسمت مقدار جدید را به روزهای باقیمانده اضافه می‌کند (جمع می‌شود)
     if (currentData.exp && currentData.exp > baseDate.getTime()) {
       baseDate = new Date(currentData.exp);
     } else if (db) {
@@ -180,7 +182,14 @@ function mainMenu(user_id) {
 }
 
 function adminPanelMenu() {
-  return { keyboard: [[{ text: "👥 لیست کامل کاربران و خریدها" }], [{ text: "🏠 بازگشت به منوی اصلی" }]], resize_keyboard: true };
+  return { 
+    keyboard: [
+      [{ text: "👥 لیست کامل کاربران و خریدها" }, { text: "مدیریت کاربران (ویرایش/حذف)" }], 
+      [{ text: "📖 راهنمای پنل ادمین" }],
+      [{ text: "🏠 بازگشت به منوی اصلی" }]
+    ], 
+    resize_keyboard: true 
+  };
 }
 
 function backAndSupportKeyboard() {
@@ -223,7 +232,6 @@ export default {
     const requestUrl = new URL(request.url);
     const botOrigin = requestUrl.origin;
 
-    // --- هندلر مربوط به ریدایرکت دیپ‌لینک (وب‌سایت واسط) ---
     if (request.method === 'GET') {
       if (requestUrl.pathname === '/import') {
         const app = requestUrl.searchParams.get('app');
@@ -271,17 +279,22 @@ export default {
         const user_id = msg.from.id;
         const text = msg.text || "";
         let state = await getState(db, user_id);
+        
+        // دکمه‌های اصلی ربات برای نادیده گرفتن در پیام شخصی
+        const mainCommands = ["/start", "🔙 مرحله قبل", "🏠 بازگشت به منوی اصلی", "🔙 بازگشت به پنل کاربری", "❌ لغو عملیات", "⚙️ ورود به پنل مدیریت حرفه‌ای", "📦 سرویس‌های من", "👥 لیست کامل کاربران و خریدها", "مدیریت کاربران (ویرایش/حذف)", "📖 راهنمای پنل ادمین", "📚 آموزش‌ها", "🔄 آموزش آپدیت کردن لینک (بروزرسانی)", "🚀 آموزش راه‌اندازی در V2Box", "📞 ارتباط با پشتیبانی", "🛒 خرید سرویس", "🎁 دریافت اکانت رایگان (تست)"];
 
-        // دستور شروع و ریست
+        // ثبت یا آپدیت نام کاربر در شروع
         if (text === '/start') {
+          const f_name = msg.from.first_name || "";
+          const u_name = msg.from.username || "";
           await clearState(db, user_id);
-          await db.prepare("INSERT OR IGNORE INTO users (user_id, join_date_shamsi) VALUES (?, ?)").bind(user_id, getShamsiNow()).run();
+          await db.prepare("INSERT INTO users (user_id, first_name, username, join_date_shamsi) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET first_name=excluded.first_name, username=excluded.username").bind(user_id, f_name, u_name, getShamsiNow()).run();
           const welcome = `\u200F👋 <b>به ربات هوشمند ما خوش آمدید!</b>\n\n💡 <b>هدیه ویژه ما:</b> کاربران جدید برای بار اول یک اکانت <b>تست ۲ روزه (تک‌کاربره)</b> رایگان دریافت می‌کنند. همچنین تمامی کاربران می‌توانند <b>هر ماه یکبار، یک اکانت رایگان ۱ روزه</b> دریافت کنند!\n\nپایداری، سرعت و امنیت را با ما تجربه کنید. لطفاً از منوی زیر یک گزینه را انتخاب کنید 👇`;
           await sendMessage(chat_id, welcome, mainMenu(user_id));
           return new Response('OK');
         }
 
-        // قفل جلوگیری از درخواست مجدد تا پاسخ ادمین و هندل کردن دکمه لغو
+        // قفل جلوگیری از درخواست مجدد تا پاسخ ادمین
         if (state && state.step === 'PENDING_ADMIN' && user_id !== ADMIN_ID) {
           if (text === "❌ لغو عملیات") {
              if (state.admin_message_id) {
@@ -293,7 +306,6 @@ export default {
                  }
              }
              
-             // اگر کاربر لغو کرد و ادمین در حال تخصیص دامنه به همین کاربر بود، ادمین را هم آزاد کن
              let adminState = await getState(db, ADMIN_ID);
              if (adminState && adminState.target_user == user_id) {
                  await clearState(db, ADMIN_ID);
@@ -302,10 +314,10 @@ export default {
 
              await clearState(db, user_id);
              await sendMessage(chat_id, "✅ عملیات با موفقیت لغو شد و به منوی اصلی بازگشتید.", mainMenu(user_id));
-          } else {
+          } else if (!msg.photo) {
              await sendMessage(chat_id, "⏳ <b>شما یک درخواست در حال بررسی دارید!</b>\nبرای انجام عملیات جدید باید منتظر پاسخ ادمین باشید یا درخواست فعلی را لغو کنید.", pendingMenu());
           }
-          return new Response('OK');
+          // اگر عکس بفرستد (برای ویرایش رسید) در بلاک msg.photo در پایین هندل می‌شود
         }
 
         if (text === "🔙 مرحله قبل" || text === "🏠 بازگشت به منوی اصلی" || text === "🔙 بازگشت به پنل کاربری" || text === "❌ لغو عملیات") {
@@ -316,6 +328,47 @@ export default {
 
         if (text === "⚙️ ورود به پنل مدیریت حرفه‌ای" && user_id === ADMIN_ID) {
           await sendMessage(chat_id, "👨‍💻 <b>به پنل مدیریت حرفه‌ای خوش آمدید.</b>\nاز گزینه‌های زیر استفاده کنید:", adminPanelMenu());
+          return new Response('OK');
+        }
+        
+        if (text === "📖 راهنمای پنل ادمین" && user_id === ADMIN_ID) {
+          const guide = `📖 <b>راهنمای پنل مدیریت ربات</b>\n\n` +
+          `🔹 <b>لیست کاربران:</b> نمایش ۲۰ کاربر آخر به همراه تاریخچه کامل خریدهایشان.\n` +
+          `🔹 <b>مدیریت کاربران:</b> با وارد کردن آیدی عددی هر کاربر، لیست سرویس‌های او ظاهر می‌شود و می‌توانید با دکمه شیشه‌ای، دیتابیس آن سرویس را برای همیشه حذف کنید تا دیگر کاربر به آن لینک دسترسی نداشته باشد.\n` +
+          `🔹 <b>تایید رسیدها:</b> وقتی کاربری رسید خرید می‌فرستد، تا زمانی که شما تایید یا رد نکرده‌اید، کاربر می‌تواند عکس رسید را عوض و ویرایش کند (تا اشتباهی رخ ندهد).\n` +
+          `🔹 <b>پیام‌های شخصی:</b> کاربران می‌توانند مستقیماً در ربات برای شما پیام بنویسند و ربات آن‌ها را به پی‌وی شما می‌فرستد.`;
+          await sendMessage(chat_id, guide);
+          return new Response('OK');
+        }
+        
+        if (text === "مدیریت کاربران (ویرایش/حذف)" && user_id === ADMIN_ID) {
+          await setState(db, ADMIN_ID, { step: 'ADMIN_MANAGE_USER' });
+          await sendMessage(chat_id, "لطفاً آیدی عددی (User ID) کاربر مورد نظر را برای مدیریت سرویس‌هایش ارسال کنید:", backAndSupportKeyboard());
+          return new Response('OK');
+        }
+
+        if (state && state.step === 'ADMIN_MANAGE_USER' && user_id === ADMIN_ID && !mainCommands.includes(text)) {
+          const target_uid = parseInt(text.trim());
+          if (isNaN(target_uid)) {
+              await sendMessage(chat_id, "❌ لطفاً یک آیدی عددی معتبر ارسال کنید.");
+              return new Response('OK');
+          }
+          const { results: userSrvs } = await db.prepare("SELECT * FROM services WHERE user_id = ? ORDER BY id DESC").bind(target_uid).all();
+          if (!userSrvs || userSrvs.length === 0) {
+              await sendMessage(chat_id, "❌ این کاربر هیچ سرویسی ندارد.");
+              return new Response('OK');
+          }
+          await sendMessage(chat_id, `⚙️ <b>مدیریت سرویس‌های کاربر:</b> <code>${target_uid}</code>`);
+          for (const s of userSrvs) {
+              const kb = {
+                  inline_keyboard: [
+                      [{ text: "❌ حذف کامل این سرویس", callback_data: `admdelsrv_${s.id}_${target_uid}` }]
+                  ]
+              };
+              const sTxt = `📦 <b>سرویس ${s.plan_days} روزه</b>\n🌐 دامنه: <code>${s.cf_domain}</code>\nتاریخ خرید: ${s.purchase_date_shamsi}\nوضعیت: ${s.status}`;
+              await sendMessage(chat_id, sTxt, kb);
+          }
+          await clearState(db, ADMIN_ID);
           return new Response('OK');
         }
         
@@ -346,7 +399,7 @@ export default {
               msgText += `وضعیت: ${s.status === 'ACTIVE' ? '✅ فعال' : '❌ غیرفعال'}\n➖➖➖➖➖➖\n`;
 
               if (s.sub_link) {
-                 row.push({ text: `📱 QR و اتصال سرویس ${idx + 1}`, callback_data: `getqr_${s.id}` });
+                 row.push({ text: `🔗 اتصال به سرویس ${idx + 1}`, callback_data: `getqr_${s.id}` });
                  if (row.length === 1) {
                      inline_keyboard.push(row);
                      row = [];
@@ -409,7 +462,7 @@ export default {
           return new Response('OK');
         }
         if (text === "📞 ارتباط با پشتیبانی") {
-          await sendMessage(chat_id, `👨‍💻 تیم پشتیبانی ما همیشه پاسخگوی شماست.\n\nبرای ارتباط مستقیم به آیدی زیر پیام دهید:\n${SUPPORT_ID}`);
+          await sendMessage(chat_id, `👨‍💻 تیم پشتیبانی ما همیشه پاسخگوی شماست.\n\n💡 <b>راهنمای پیام خصوصی:</b>\nشما می‌توانید به راحتی متن سوال یا پیام خود را مستقیماً در همین ربات تایپ کرده و ارسال کنید تا پیام شما مستقیماً برای مدیریت فرستاده شود!\n\nیا در صورت نیاز به آیدی زیر پیام دهید:\n${SUPPORT_ID}`);
           return new Response('OK');
         }
 
@@ -426,7 +479,6 @@ export default {
             return new Response('OK');
           }
 
-          // بررسی دریافت اکانت رایگان در 30 روز گذشته با دقت بالا
           const userRow = await db.prepare("SELECT last_test_date FROM users WHERE user_id = ?").bind(user_id).first();
           let isFirstTime = true;
           if (userRow && userRow.last_test_date) {
@@ -448,12 +500,10 @@ export default {
           
           let newState = { days: testDays, hours: 0, type: `اکانت تست (${testDays} روزه - تک‌کاربره)`, is_test: true, user_type: '1', step: 'PENDING_ADMIN' };
           
-          // تولید لینک پروفایل استاندارد برای ادمین
           const first_name = msg.from.first_name ? msg.from.first_name.replace(/[<>&]/g, '') : "کاربر";
           const username = msg.from.username ? `(@${msg.from.username})` : "";
           const userLink = `<a href="tg://user?id=${user_id}">${first_name}</a> ${username}`.trim();
 
-          // پیدا کردن آخرین ورکر کاربر برای اطلاع ادمین
           const lastSrv = await db.prepare("SELECT cf_domain FROM services WHERE user_id = ? ORDER BY id DESC LIMIT 1").bind(user_id).first();
           const workerText = lastSrv ? `\n🌐 <b>ورکر فعلی:</b> <code>${lastSrv.cf_domain}</code>` : `\n🌐 <b>ورکر فعلی:</b> ندارد (نیاز به ثبت ورکر جدید)`;
 
@@ -473,49 +523,84 @@ export default {
           return new Response('OK');
         }
 
-        if (msg.photo && state && state.step === 'WAIT_RECEIPT') {
-          if (state.locked) return new Response('OK');
-          state.locked = true;
-          await setState(db, user_id, state);
+        // ================= پردازش عکس‌های ارسالی (رسید و ویرایش رسید) =================
+        if (msg.photo) {
+          if (state && state.step === 'WAIT_RECEIPT') {
+            if (state.locked) return new Response('OK');
+            state.locked = true;
+            await setState(db, user_id, state);
 
-          if (Date.now() - state.timer_start > 600000) {
-            await clearState(db, user_id);
-            await sendMessage(user_id, "❌ زمان ۱۰ دقیقه‌ای شما برای پرداخت به پایان رسیده است. لطفاً فرآیند را مجدداً آغاز کنید.", mainMenu(user_id));
+            if (Date.now() - state.timer_start > 600000) {
+              await clearState(db, user_id);
+              await sendMessage(user_id, "❌ زمان ۱۰ دقیقه‌ای شما برای پرداخت به پایان رسیده است. لطفاً فرآیند را مجدداً آغاز کنید.", mainMenu(user_id));
+              return new Response('OK');
+            }
+
+            const photoId = msg.photo[msg.photo.length - 1].file_id;
+            const info = state;
+            
+            const first_name = msg.from.first_name ? msg.from.first_name.replace(/[<>&]/g, '') : "کاربر";
+            const username = msg.from.username ? `(@${msg.from.username})` : "";
+            const userLink = `<a href="tg://user?id=${user_id}">${first_name}</a> ${username}`.trim();
+
+            const lastSrv = await db.prepare("SELECT cf_domain FROM services WHERE user_id = ? ORDER BY id DESC LIMIT 1").bind(user_id).first();
+            const workerText = lastSrv ? `🌐 <b>ورکر فعلی کاربر:</b> <code>${lastSrv.cf_domain}</code>\n` : `🌐 <b>ورکر فعلی کاربر:</b> ندارد (نیاز به ثبت ورکر جدید)\n`;
+
+            let caption = `🧾 <b>درخواست پرداخت جدید</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>\n📅 <b>زمان ثبت:</b> ${getShamsiNow()}\n📦 پلن: ${info.days} روزه - ${info.type}\n${workerText}`;
+            const isSingle = info.type.includes('یک کاربره') ? '1' : '0';
+            
+            const admMarkup = { inline_keyboard: [
+                [{ text: "✅ تایید پرداختی و شارژ اکانت", callback_data: `admaprv_buy_${user_id}_${info.days}_0_${isSingle}` }],
+                [{ text: "❌ رد کردن درخواست", callback_data: `admrej_${user_id}` }]
+            ] };
+
+            state.step = 'PENDING_ADMIN';
+            state.locked = false;
+            // ذخیره برای ویرایش بعدی
+            state.admin_caption = caption;
+            state.admin_markup = admMarkup;
+
+            const adminMsgRes = await callTelegram('sendPhoto', { chat_id: ADMIN_ID, photo: photoId, caption: caption, parse_mode: "HTML", reply_markup: admMarkup });
+            if (adminMsgRes && adminMsgRes.ok) {
+                state.admin_message_id = adminMsgRes.result.message_id;
+            }
+            await setState(db, user_id, state);
+            
+            await sendMessage(user_id, "✅ رسید شما ارسال شد و در صف بررسی قرار گرفت.\n💡 در صورت اشتباه بودن رسید، می‌توانید مجدداً عکس صحیح را همینجا ارسال کنید تا جایگزین شود.", pendingMenu());
+            return new Response('OK');
+          } 
+          // امکان ویرایش رسید تا زمانی که ادمین تایید نکرده
+          else if (state && state.step === 'PENDING_ADMIN' && !state.is_test) {
+            const photoId = msg.photo[msg.photo.length - 1].file_id;
+            await callTelegram('editMessageMedia', {
+                chat_id: ADMIN_ID,
+                message_id: state.admin_message_id,
+                media: {
+                    type: 'photo',
+                    media: photoId,
+                    caption: "🔄 <b>(رسید ویرایش و جایگزین شده)</b>\n\n" + (state.admin_caption || ""),
+                    parse_mode: 'HTML'
+                },
+                reply_markup: state.admin_markup
+            });
+            await sendMessage(user_id, "✅ رسید شما با موفقیت ویرایش و عکس جدید برای پشتیبانی ارسال گردید.", pendingMenu());
             return new Response('OK');
           }
+        }
 
-          const photoId = msg.photo[msg.photo.length - 1].file_id;
-          const info = state;
-          
-          // تولید لینک پروفایل استاندارد برای ادمین
-          const first_name = msg.from.first_name ? msg.from.first_name.replace(/[<>&]/g, '') : "کاربر";
-          const username = msg.from.username ? `(@${msg.from.username})` : "";
-          const userLink = `<a href="tg://user?id=${user_id}">${first_name}</a> ${username}`.trim();
-
-          // پیدا کردن آخرین ورکر کاربر برای اطلاع ادمین
-          const lastSrv = await db.prepare("SELECT cf_domain FROM services WHERE user_id = ? ORDER BY id DESC LIMIT 1").bind(user_id).first();
-          const workerText = lastSrv ? `🌐 <b>ورکر فعلی کاربر:</b> <code>${lastSrv.cf_domain}</code>\n` : `🌐 <b>ورکر فعلی کاربر:</b> ندارد (نیاز به ثبت ورکر جدید)\n`;
-
-          let caption = `🧾 <b>درخواست پرداخت جدید</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>\n📅 <b>زمان ثبت:</b> ${getShamsiNow()}\n📦 پلن: ${info.days} روزه - ${info.type}\n${workerText}`;
-          const isSingle = info.type.includes('یک کاربره') ? '1' : '0';
-          
-          const admMarkup = { inline_keyboard: [
-              [{ text: "✅ تایید پرداختی و شارژ اکانت", callback_data: `admaprv_buy_${user_id}_${info.days}_0_${isSingle}` }],
-              [{ text: "❌ رد کردن درخواست", callback_data: `admrej_${user_id}` }]
-          ] };
-
-          // فعال‌سازی قفل بررسی ادمین
-          state.step = 'PENDING_ADMIN';
-          state.locked = false;
-
-          const adminMsgRes = await callTelegram('sendPhoto', { chat_id: ADMIN_ID, photo: photoId, caption: caption, parse_mode: "HTML", reply_markup: admMarkup });
-          if (adminMsgRes && adminMsgRes.ok) {
-              state.admin_message_id = adminMsgRes.result.message_id;
-          }
-          await setState(db, user_id, state);
-          
-          await sendMessage(user_id, "✅ رسید شما با موفقیت ارسال شد و در صف بررسی قرار گرفت. لطفاً تا بررسی ادمین صبور باشید.", pendingMenu());
-          return new Response('OK');
+        // ================= پیام‌های متنی آزاد و سیستم PM =================
+        if (text && !mainCommands.includes(text) && (!state || state.step === 'CONFIRM_PM')) {
+            // اگر قبلاً در حالت ارسال نبود و یک متن آزاد فرستاد
+            if (!state || state.step !== 'CONFIRM_PM') {
+                await setState(db, user_id, { step: 'CONFIRM_PM', pm_text: text });
+                await sendMessage(chat_id, "💬 <b>سیستم پشتیبانی</b>\n\nآیا مایل هستید پیام زیر مستقیماً برای پشتیبانی ارسال شود؟\n\n" + text, {
+                    inline_keyboard: [
+                        [{text: "✅ بله، ارسال شود", callback_data: "send_pm"}],
+                        [{text: "❌ لغو", callback_data: "cancel_pm"}]
+                    ]
+                });
+                return new Response('OK');
+            }
         }
 
         // ================= دریافت دامنه ورکر توسط ادمین (اولین بار کاربر) =================
@@ -553,24 +638,25 @@ export default {
             const planName = state.action === 'test' ? `تست ${state.days} روزه` : `سرویس ${state.days} روزه (${state.user_type === '1' ? 'یک کاربره' : 'چند کاربره'})`;
             const planTypeDb = state.action === 'test' ? "اکانت تست (رایگان)" : "Normal";
             
-            // رفع مشکل ثبت نشدن تست برای کاربران جدید
             if (state.action === 'test') {
-              await db.prepare("INSERT INTO users (user_id, last_test_date) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_test_date = excluded.last_test_date").bind(state.target_user, getShamsiDateOnly()).run();
+              await db.prepare("UPDATE users SET last_test_date = ? WHERE user_id = ?").bind(getShamsiDateOnly(), state.target_user).run();
             }
             
             await db.prepare("INSERT INTO services (user_id, plan_days, plan_type, cf_domain, sub_link, exp_date, status, purchase_date_shamsi) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
                 .bind(state.target_user, state.days, planTypeDb, domainInput, cfRes.subLink, newExpDateStr, 'ACTIVE', shamsiNow).run();
             
-            // باز کردن قفل کاربر و بازگشت کیبورد
             await clearState(db, state.target_user);
 
-            // ارسال QR Code و نمایش بسته برای کاربر
-            const userCaption = `✅ <b>سرویس اختصاصی شما آماده و فعال شد!</b>\n\n📦 <b>بسته:</b> ${planName}\n📅 <b>تاریخ ثبت:</b> ${shamsiNow}\n\n🔗 <b>لینک سابسکریپشن شما:</b>\n<code>${cfRes.subLink}</code>\n\n💡 <i>از دکمه‌های زیر برای افزودن سریع به برنامه استفاده کنید یا بارکد را اسکن نمایید.</i>`;
+            const userCaption = `✅ <b>سرویس اختصاصی شما آماده و فعال شد!</b>\n\n📦 <b>بسته:</b> ${planName}\n📅 <b>تاریخ ثبت:</b> ${shamsiNow}\n\n🔗 <b>لینک اختصاصی شما:</b>\n<code>${cfRes.subLink}</code>\n\n🛡 <b>لینک امن و کمکی:</b>\n<code>${FIXED_TUNNEL_LINK}</code>\n\n💡 <i>از دکمه‌های زیر برای افزودن سریع به برنامه استفاده کنید یا بارکد را اسکن نمایید.</i>`;
             await callTelegram('sendPhoto', { chat_id: state.target_user, photo: getQRUrl(cfRes.subLink), caption: userCaption, parse_mode: 'HTML', reply_markup: getImportKeyboard(cfRes.subLink, botOrigin) });
             await sendMessage(state.target_user, "✅ درخواست شما تایید و اعمال شد. به منوی اصلی بازگشتید.", mainMenu(state.target_user));
 
-            // ارسال تاییدیه و QR Code برای ادمین
-            const adminCaption = `✅ <b>تحویل سرویس به کاربر با موفقیت انجام شد.</b>\n\n📦 <b>بسته:</b> ${planName}\n👤 <b>آیدی کاربر:</b> <a href="tg://user?id=${state.target_user}">${state.target_user}</a>\n🔗 <b>لینک:</b>\n<code>${cfRes.subLink}</code>`;
+            const uRow = await db.prepare("SELECT first_name, username FROM users WHERE user_id = ?").bind(state.target_user).first();
+            let uName = "کاربر"; let uUsername = "";
+            if (uRow) { if (uRow.first_name) uName = uRow.first_name.replace(/[<>&]/g, ''); if (uRow.username) uUsername = `(@${uRow.username})`; }
+            const userLink = `<a href="tg://user?id=${state.target_user}">${uName}</a> ${uUsername}`.trim();
+
+            const adminCaption = `✅ <b>تحویل سرویس به کاربر با موفقیت انجام شد.</b>\n\n👤 <b>کاربر:</b> ${userLink}\n🆔 <b>آیدی:</b> <code>${state.target_user}</code>\n📦 <b>بسته:</b> ${planName}\n🔗 <b>لینک:</b>\n<code>${cfRes.subLink}</code>`;
             await callTelegram('sendPhoto', { chat_id: ADMIN_ID, photo: getQRUrl(cfRes.subLink), caption: adminCaption, parse_mode: 'HTML' });
             
             await clearState(db, ADMIN_ID);
@@ -591,7 +677,20 @@ export default {
         const data = call.data;
         let state = await getState(db, user_id) || {};
 
-        // قفل جلوگیری از کلیک روی دکمه‌های اینلاین در زمان انتظار
+        // پیام سیستم شخصی
+        if (data === 'send_pm') {
+            await callTelegram('editMessageReplyMarkup', { chat_id, message_id: msg_id, reply_markup: { inline_keyboard: [] } });
+            await callTelegram('sendMessage', { chat_id: ADMIN_ID, text: `💬 <b>پیام جدید از کاربر:</b> <a href="tg://user?id=${user_id}">${user_id}</a>\n\n${state.pm_text}`, parse_mode: 'HTML' });
+            await clearState(db, user_id);
+            await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: "✅ پیام شما با موفقیت برای پشتیبانی ارسال شد." });
+            return new Response('OK');
+        }
+        if (data === 'cancel_pm') {
+            await clearState(db, user_id);
+            await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: "❌ ارسال پیام لغو شد." });
+            return new Response('OK');
+        }
+
         if (state && state.step === 'PENDING_ADMIN' && user_id !== ADMIN_ID && !data.startsWith('adm')) {
             await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "⏳ درخواست شما در حال بررسی است. لطفا منتظر بمانید.", show_alert: true });
             return new Response('OK');
@@ -609,12 +708,20 @@ export default {
           return new Response('OK');
         }
 
-        // --- نمایش تصویر QR ---
+        if (data.startsWith('admdelsrv_')) {
+            if (user_id !== ADMIN_ID) return new Response('OK');
+            const srvId = data.split('_')[1];
+            await db.prepare("DELETE FROM services WHERE id = ?").bind(srvId).run();
+            await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: "✅ این سرویس با موفقیت از دیتابیس ربات حذف شد." });
+            return new Response('OK');
+        }
+
         if (data.startsWith('getqr_')) {
           const serviceId = data.split('_')[1];
           const srv = await db.prepare("SELECT sub_link FROM services WHERE id = ? AND user_id = ?").bind(serviceId, user_id).first();
           if (srv && srv.sub_link) {
-              await callTelegram('sendPhoto', { chat_id, photo: getQRUrl(srv.sub_link), caption: "📱 <b>بارکد (QR Code) و لینک اشتراک شما</b>\nجهت اتصال سریع، روی دکمه‌های زیر کلیک کنید یا بارکد را اسکن نمایید.", parse_mode: 'HTML', reply_markup: getImportKeyboard(srv.sub_link, botOrigin) });
+              const txt = `📱 <b>بارکد (QR Code) و لینک اشتراک شما</b>\n\n🔗 <b>لینک اختصاصی شما:</b>\n<code>${srv.sub_link}</code>\n\n🛡 <b>لینک کمکی و امن:</b>\n<code>${FIXED_TUNNEL_LINK}</code>\n\nجهت اتصال سریع، روی دکمه‌های زیر کلیک کنید یا بارکد را اسکن نمایید.`;
+              await callTelegram('sendPhoto', { chat_id, photo: getQRUrl(srv.sub_link), caption: txt, parse_mode: 'HTML', reply_markup: getImportKeyboard(srv.sub_link, botOrigin) });
           } else {
               await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ لینک سابسکریپشن و بارکد این سرویس یافت نشد.", show_alert: true });
           }
@@ -660,9 +767,8 @@ export default {
           } else {
              await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: "❌ <b>توسط شما رد شد.</b>", parse_mode: "HTML" });
           }
-          // باز کردن قفل کاربر و بازگشت کیبورد
           await clearState(db, targetUser);
-          await sendMessage(targetUser, "❌ متاسفانه درخواست / رسید پرداختی شما توسط بخش پشتیبانی رد شد. در صورت بروز مشکل با ادمین در ارتباط باشید.", mainMenu(targetUser));
+          await sendMessage(targetUser, "❌ متاسفانه درخواست یا رسید پرداختی شما توسط پشتیبانی رد شد. در صورت بروز مشکل مجدداً اقدام کنید یا پیام بدهید.", mainMenu(targetUser));
         }
 
         // ================= شارژ و تایید اکانت =================
@@ -675,7 +781,6 @@ export default {
           const hours = parts[4];
           const userType = parts[5] || '1';
 
-          // خواندن آخرین دامنه کاربر (در صورت وجود)
           const lastService = await db.prepare("SELECT cf_domain FROM services WHERE user_id = ? ORDER BY id DESC LIMIT 1").bind(targetUser).first();
           let preSelectedDomain = lastService ? lastService.cf_domain : null;
 
@@ -709,24 +814,25 @@ export default {
                   const planName = action === 'test' ? `تست ${days} روزه` : `سرویس ${days} روزه (${applySingle ? 'یک کاربره' : 'چند کاربره'})`;
                   const planTypeDb = action === 'test' ? "اکانت تست (رایگان)" : "Normal";
 
-                  // رفع مشکل ثبت نشدن تست برای کاربران جدید
                   if (action === 'test') {
-                    await db.prepare("INSERT INTO users (user_id, last_test_date) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_test_date = excluded.last_test_date").bind(targetUser, getShamsiDateOnly()).run();
+                    await db.prepare("UPDATE users SET last_test_date = ? WHERE user_id = ?").bind(getShamsiDateOnly(), targetUser).run();
                   } 
                   
                   await db.prepare("INSERT INTO services (user_id, plan_days, plan_type, cf_domain, sub_link, exp_date, status, purchase_date_shamsi) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
                       .bind(targetUser, days, planTypeDb, normalizedDomain, cfRes.subLink, cfRes.newExpDate, 'ACTIVE', shamsiNow).run();
                   
-                  // باز کردن قفل کاربر و بازگشت به منو
                   await clearState(db, targetUser);
 
-                  // ارسال پیام به کاربر
-                  const userCaption = `✅ <b>سرویس اختصاصی شما با موفقیت شارژ/فعال شد!</b>\n\n📦 <b>بسته خریداری شده:</b> ${planName}\n📅 <b>تاریخ ثبت:</b> ${shamsiNow}\n\n🔗 <b>لینک سابسکریپشن:</b>\n<code>${cfRes.subLink}</code>\n\n💡 <i>از دکمه‌های زیر برای افزودن سریع به برنامه استفاده کنید یا بارکد را اسکن نمایید.</i>`;
+                  const userCaption = `✅ <b>سرویس اختصاصی شما با موفقیت شارژ/فعال شد!</b>\n\n📦 <b>بسته خریداری شده:</b> ${planName}\n📅 <b>تاریخ ثبت:</b> ${shamsiNow}\n\n🔗 <b>لینک اختصاصی شما:</b>\n<code>${cfRes.subLink}</code>\n\n🛡 <b>لینک امن و کمکی:</b>\n<code>${FIXED_TUNNEL_LINK}</code>\n\n💡 <i>از دکمه‌های زیر برای افزودن سریع به برنامه استفاده کنید یا بارکد را اسکن نمایید.</i>`;
                   await callTelegram('sendPhoto', { chat_id: targetUser, photo: getQRUrl(cfRes.subLink), caption: userCaption, parse_mode: 'HTML', reply_markup: getImportKeyboard(cfRes.subLink, botOrigin) });
                   await sendMessage(targetUser, "✅ عملیات با موفقیت انجام شد و به منوی اصلی بازگشتید.", mainMenu(targetUser));
                   
-                  // ارسال تاییدیه به ادمین
-                  const adminCaption = `✅ <b>شارژ خودکار اکانت با موفقیت انجام شد!</b>\n\n📦 <b>بسته:</b> ${planName}\n👤 <b>کاربر:</b> <a href="tg://user?id=${targetUser}">${targetUser}</a>\n🔗 <b>لینک:</b>\n<code>${cfRes.subLink}</code>`;
+                  const uRow = await db.prepare("SELECT first_name, username FROM users WHERE user_id = ?").bind(targetUser).first();
+                  let uName = "کاربر"; let uUsername = "";
+                  if (uRow) { if (uRow.first_name) uName = uRow.first_name.replace(/[<>&]/g, ''); if (uRow.username) uUsername = `(@${uRow.username})`; }
+                  const userLink = `<a href="tg://user?id=${targetUser}">${uName}</a> ${uUsername}`.trim();
+
+                  const adminCaption = `✅ <b>شارژ خودکار اکانت با موفقیت انجام شد!</b>\n\n👤 <b>کاربر:</b> ${userLink}\n🆔 <b>آیدی:</b> <code>${targetUser}</code>\n📦 <b>بسته:</b> ${planName}\n🔗 <b>لینک:</b>\n<code>${cfRes.subLink}</code>`;
                   await callTelegram('sendPhoto', { chat_id: ADMIN_ID, photo: getQRUrl(cfRes.subLink), caption: adminCaption, parse_mode: 'HTML' });
                   
               } else {
@@ -735,7 +841,7 @@ export default {
               return new Response('OK');
           }
 
-          // اگر ورکر قبلی نداشت (کاربر جدید)
+          // دریافت ورکر جدید
           await callTelegram('editMessageReplyMarkup', { chat_id, message_id: msg_id, reply_markup: { inline_keyboard: [] } });
           
           if (call.message.photo) {
@@ -799,22 +905,25 @@ export default {
                   const planName = processState.action === 'test' ? `تست ${processState.days} روزه` : `سرویس ${processState.days} روزه (${processState.user_type === '1' ? 'یک کاربره' : 'چند کاربره'})`;
                   const planTypeDb = processState.action === 'test' ? "اکانت تست (رایگان)" : "Normal";
                   
-                  // رفع مشکل ثبت نشدن تست برای کاربران جدید
                   if (processState.action === 'test') {
-                    await db.prepare("INSERT INTO users (user_id, last_test_date) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_test_date = excluded.last_test_date").bind(processState.target_user, getShamsiDateOnly()).run();
+                    await db.prepare("UPDATE users SET last_test_date = ? WHERE user_id = ?").bind(getShamsiDateOnly(), processState.target_user).run();
                   } 
                   
                   await db.prepare("INSERT INTO services (user_id, plan_days, plan_type, cf_domain, sub_link, exp_date, status, purchase_date_shamsi) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
                       .bind(processState.target_user, processState.days, planTypeDb, normalizedDomain, cfRes.subLink, newExpDateStr, 'ACTIVE', shamsiNow).run();
                   
-                  // باز کردن قفل
                   await clearState(db, processState.target_user);
 
-                  const userCaption = `✅ <b>سرویس اختصاصی شما آماده و فعال شد!</b>\n\n📦 <b>بسته خریداری شده:</b> ${planName}\n📅 <b>تاریخ ثبت:</b> ${shamsiNow}\n\n🔗 <b>لینک سابسکریپشن شما:</b>\n<code>${cfRes.subLink}</code>\n\n💡 <i>از دکمه‌های زیر برای افزودن سریع به برنامه استفاده کنید.</i>`;
+                  const userCaption = `✅ <b>سرویس اختصاصی شما آماده و فعال شد!</b>\n\n📦 <b>بسته خریداری شده:</b> ${planName}\n📅 <b>تاریخ ثبت:</b> ${shamsiNow}\n\n🔗 <b>لینک اختصاصی شما:</b>\n<code>${cfRes.subLink}</code>\n\n🛡 <b>لینک امن و کمکی:</b>\n<code>${FIXED_TUNNEL_LINK}</code>\n\n💡 <i>از دکمه‌های زیر برای افزودن سریع به برنامه استفاده کنید.</i>`;
                   await callTelegram('sendPhoto', { chat_id: processState.target_user, photo: getQRUrl(cfRes.subLink), caption: userCaption, parse_mode: 'HTML', reply_markup: getImportKeyboard(cfRes.subLink, botOrigin) });
                   await sendMessage(processState.target_user, "✅ درخواست شما تایید و اعمال شد. به منوی اصلی بازگشتید.", mainMenu(processState.target_user));
                   
-                  const adminCaption = `✅ <b>تحویل سرویس به کاربر با موفقیت انجام شد.</b>\n\n📦 <b>بسته:</b> ${planName}\n👤 <b>کاربر:</b> <a href="tg://user?id=${processState.target_user}">${processState.target_user}</a>\n🔗 <b>لینک:</b>\n<code>${cfRes.subLink}</code>`;
+                  const uRow = await db.prepare("SELECT first_name, username FROM users WHERE user_id = ?").bind(processState.target_user).first();
+                  let uName = "کاربر"; let uUsername = "";
+                  if (uRow) { if (uRow.first_name) uName = uRow.first_name.replace(/[<>&]/g, ''); if (uRow.username) uUsername = `(@${uRow.username})`; }
+                  const userLink = `<a href="tg://user?id=${processState.target_user}">${uName}</a> ${uUsername}`.trim();
+
+                  const adminCaption = `✅ <b>تحویل سرویس به کاربر با موفقیت انجام شد.</b>\n\n👤 <b>کاربر:</b> ${userLink}\n🆔 <b>آیدی:</b> <code>${processState.target_user}</code>\n📦 <b>بسته:</b> ${planName}\n🔗 <b>لینک:</b>\n<code>${cfRes.subLink}</code>`;
                   await callTelegram('sendPhoto', { chat_id: ADMIN_ID, photo: getQRUrl(cfRes.subLink), caption: adminCaption, parse_mode: 'HTML' });
                   
                   await clearState(db, ADMIN_ID);
