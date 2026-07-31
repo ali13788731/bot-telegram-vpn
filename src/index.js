@@ -258,6 +258,7 @@ function adminServiceKeyboard(isSingle, isBlocked) {
     keyboard: [
       [{ text: "⏳ صفر کردن زمان" }, { text: "➕ تمدید / شارژ" }],
       [{ text: isSingle ? "👥 تبدیل به چندکاربره" : "👤 تبدیل به تک‌کاربره" }, { text: isBlocked ? "✅ وصل فوری" : "🛑 قطع فوری" }],
+      [{ text: "✏️ ویرایش ورکر" }],
       [{ text: "🏠 بازگشت به منوی اصلی" }]
     ], 
     resize_keyboard: true 
@@ -461,6 +462,12 @@ export default {
                 await sendMessage(ADMIN_ID, `⏳ لطفاً تعداد روزهایی که می‌خواهید به این سرویس افزوده شود را تایپ کنید:`, pendingMenu());
                 return new Response('OK');
             }
+            else if (text === "✏️ ویرایش ورکر") {
+                await setState(db, ADMIN_ID, { step: 'WAIT_EDIT_WORKER_DOMAIN', service_id: srvId });
+                const editKb = { inline_keyboard: [[{ text: "❌ انصراف از این عملیات", callback_data: "cancel_admin" }]] };
+                await sendMessage(ADMIN_ID, `✏️ <b>ویرایش آدرس ورکر سرویس #${srvId}</b>\n\n🌐 آدرس فعلی:\n<code>${srv.cf_domain}</code>\n\nلطفاً <b>آدرس دامنه جدید ورکر</b> را تایپ و ارسال کنید:`, editKb);
+                return new Response('OK');
+            }
 
             // ارسال پیام وضعیت فعلی با جزئیات کامل و کیبورد جدید
             if (updated) {
@@ -579,7 +586,7 @@ export default {
           
           mainMsg += `👇 در حال مدیریت سرویس اصلی (آخرین ورکر). دکمه‌های کنترل را در پایین صفحه مشاهده می‌کنید.`;
 
-          await sendMessage(ADMIN_ID, mainMsg, adminServiceKeyboard(isSingle, isKsActive));
+          await callTelegram('sendPhoto', { chat_id: ADMIN_ID, photo: getQRUrl(smartSubLink), caption: mainMsg, parse_mode: 'HTML', reply_markup: adminServiceKeyboard(isSingle, isKsActive) });
 
           for (const s of srvList) {
             let expView = "نامشخص";
@@ -595,11 +602,13 @@ export default {
             let priceText = planPrice > 0 ? `${planPrice.toLocaleString('fa-IR')} تومان` : "تست / رایگان";
 
             let srvMsg = `📦 <b>شناسه سرویس:</b> #${s.id}\n`;
+            srvMsg += `📅 <b>شروع:</b> ${s.purchase_date_shamsi || "نامشخص"}\n`;
             srvMsg += `⏳ <b>انقضا:</b> ${expView}\n`;
             srvMsg += `🛍 <b>اسم سرویس:</b> ${s.plan_days} روزه (${s.plan_type})\n`;
-            srvMsg += `💳 <b>مبلغ خرید:</b> ${priceText}`;
+            srvMsg += `💳 <b>مبلغ خرید:</b> ${priceText}\n`;
+            srvMsg += `🔘 <b>وضعیت:</b> ${s.status === 'ACTIVE' ? '✅ فعال' : '❌ غیرفعال'}`;
             
-            let kb = { inline_keyboard: [ [ { text: "✏️ ویرایش ورکر", callback_data: `admeditworker_${s.id}` }, { text: "🗑 حذف سرویس", callback_data: `admdel_${s.id}` } ] ] };
+            let kb = { inline_keyboard: [ [ { text: "🗑 حذف سرویس", callback_data: `admdel_${s.id}` } ] ] };
             await sendMessage(ADMIN_ID, srvMsg, kb);
           }
           return new Response('OK');
@@ -1277,7 +1286,7 @@ export default {
           
           mainMsg += `👇 در حال مدیریت سرویس اصلی (آخرین ورکر). دکمه‌های کنترل را در پایین صفحه مشاهده می‌کنید.`;
 
-          await sendMessage(ADMIN_ID, mainMsg, adminServiceKeyboard(isSingle, isKsActive));
+          await callTelegram('sendPhoto', { chat_id: ADMIN_ID, photo: getQRUrl(smartSubLink), caption: mainMsg, parse_mode: 'HTML', reply_markup: adminServiceKeyboard(isSingle, isKsActive) });
 
           for (const s of srvList) {
             let expView = "نامشخص";
@@ -1290,11 +1299,13 @@ export default {
             let priceText = planPrice > 0 ? `${planPrice.toLocaleString('fa-IR')} تومان` : "تست / رایگان";
 
             let srvMsg = `📦 <b>شناسه سرویس:</b> #${s.id}\n`;
+            srvMsg += `📅 <b>شروع:</b> ${s.purchase_date_shamsi || "نامشخص"}\n`;
             srvMsg += `⏳ <b>انقضا:</b> ${expView}\n`;
             srvMsg += `🛍 <b>اسم سرویس:</b> ${s.plan_days} روزه (${s.plan_type})\n`;
-            srvMsg += `💳 <b>مبلغ خرید:</b> ${priceText}`;
+            srvMsg += `💳 <b>مبلغ خرید:</b> ${priceText}\n`;
+            srvMsg += `🔘 <b>وضعیت:</b> ${s.status === 'ACTIVE' ? '✅ فعال' : '❌ غیرفعال'}`;
             
-            let kb = { inline_keyboard: [ [ { text: "✏️ ویرایش ورکر", callback_data: `admeditworker_${s.id}` }, { text: "🗑 حذف سرویس", callback_data: `admdel_${s.id}` } ] ] };
+            let kb = { inline_keyboard: [ [ { text: "🗑 حذف سرویس", callback_data: `admdel_${s.id}` } ] ] };
             await sendMessage(ADMIN_ID, srvMsg, kb);
           }
           return new Response('OK');
