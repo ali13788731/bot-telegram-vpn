@@ -389,8 +389,20 @@ export default {
         // 🟢 هندل سراسری دکمه‌های لغو برای تمام بخش‌ها (به جز PENDING کاربر که بالاتر هندل شد)
         if (text === "🔙 مرحله قبل" || text === "🏠 بازگشت به منوی اصلی" || text === "🔙 بازگشت به پنل کاربری" || text === "❌ لغو عملیات") {
           await clearState(db, user_id);
-          const menu = user_id === ADMIN_ID ? adminPanelMenu() : mainMenu(user_id);
-          await sendMessage(chat_id, "🏠 عملیات فعلی لغو شد و به منوی اصلی برگشتید.", menu);
+          
+          let menu;
+          let replyMsg = "🏠 عملیات فعلی لغو شد.";
+          
+          // اگر دقیقاً دکمه "بازگشت به منوی اصلی" زده شد، حتی ادمین هم باید به منوی اصلی (خرید و سرویس‌ها) برگردد
+          if (text === "🏠 بازگشت به منوی اصلی") {
+            menu = mainMenu(user_id);
+            replyMsg = "🏠 به منوی اصلی برگشتید.";
+          } else {
+            // برای "لغو عملیات"، ادمین به پنل مدیریت و کاربر عادی به منوی اصلی برمی‌گردد
+            menu = user_id === ADMIN_ID ? adminPanelMenu() : mainMenu(user_id);
+          }
+          
+          await sendMessage(chat_id, replyMsg, menu);
           return new Response('OK');
         }
 
