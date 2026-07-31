@@ -404,11 +404,11 @@ export default {
         }
 
         // دکمه مدیریت کاربر
-		if (text === "🛠 مدیریت سرویس‌های کاربر" && user_id === ADMIN_ID) {
-		  await setState(db, ADMIN_ID, { step: 'WAIT_ADMIN_SEARCH_USER' });
-		  await sendMessage(chat_id, "🔍 لطفاً <b>آیدی عددی</b>، <b>یوزرنیم</b> یا <b>آدرس ورکر</b> کاربر را جهت جستجو ارسال کنید:", pendingMenu());
-		  return new Response('OK');
-		}
+        if (text === "🛠 مدیریت سرویس‌های کاربر" && user_id === ADMIN_ID) {
+          await setState(db, ADMIN_ID, { step: 'WAIT_ADMIN_SEARCH_USER' });
+          await sendMessage(chat_id, "🔍 لطفاً <b>آیدی عددی</b>، <b>یوزرنیم</b> یا <b>آدرس ورکر</b> کاربر را جهت جستجو ارسال کنید:", pendingMenu());
+          return new Response('OK');
+        }
 
         // اعمال کنترل‌های پنل مدیریت روی دکمه‌های ثابت
         if (user_id === ADMIN_ID && state && state.step === 'MANAGE_FIXED_ACTIONS') {
@@ -485,11 +485,6 @@ export default {
             }
         }
 
-
-
-
-
-
         // جستجوی پیشرفته کاربر در پنل ادمین
         if (user_id === ADMIN_ID && state && state.step === 'WAIT_ADMIN_SEARCH_USER') {
           let searchTerm = text.trim();
@@ -565,10 +560,10 @@ export default {
           mainMsg += `🆔 آیدی: <code>${targetUid}</code>\n`;
           mainMsg += `تعداد سرویس‌ها: ${srvList.length}\n\n`;
           
-          mainMsg += `آدرس ورکر\nمثال: ${pureWorkerUrl}/\n\n`;
-          mainMsg += `ادرس پنل معمولی باید به این شکل باشه\nمثال: ${pureWorkerUrl}/autologin?pw=88990011\n\n`;
-          mainMsg += `آدرس پنل مخفی باید به این شکل باشه\nمثال: ${pureWorkerUrl}/${CF_ADMIN_PATH}?token=${CF_ADMIN_TOKEN}\n\n`;
-          mainMsg += `لینک اشتراک هوشمند هم باید داخلش باشه\nمثال:\n${smartSubLink}\n\n`;
+          mainMsg += `🌐 <b>آدرس ورکر:</b>\n<code>${pureWorkerUrl}/</code>\n\n`;
+          mainMsg += `📊 <b>لینک پنل معمولی:</b>\n<code>${pureWorkerUrl}/login</code>\n\n`;
+          mainMsg += `🕵️‍♂️ <b>لینک پنل مخفی:</b>\n<code>${pureWorkerUrl}/${CF_ADMIN_PATH}?token=${CF_ADMIN_TOKEN}</code>\n\n`;
+          mainMsg += `🔗 <b>لینک اشتراک هوشمند:</b>\n<code>${smartSubLink}</code>\n\n`;
           
           mainMsg += `👇 در حال مدیریت سرویس اصلی (آخرین ورکر). دکمه‌های کنترل را در پایین صفحه مشاهده می‌کنید.`;
 
@@ -597,23 +592,6 @@ export default {
           }
           return new Response('OK');
         }
-		
-		
-		
-		
-		
-		
-		
-		
-		
-		
-		
-		
-		
-		
-		
-		
-		
 
         // تمدید سرویس توسط ادمین (و آپدیت دکمه درجا)
         if (user_id === ADMIN_ID && state && state.step === 'WAIT_ADMIN_ADD_DAYS') {
@@ -722,7 +700,7 @@ export default {
 
         if (text === "👤 وضعیت من") {
           const uRow = await db.prepare("SELECT * FROM users WHERE user_id = ?").bind(user_id).first();
-          const { results: srvList } = await db.prepare("SELECT * FROM services WHERE user_id = ? ORDER BY id DESC").all();
+          const { results: srvList } = await db.prepare("SELECT * FROM services WHERE user_id = ? ORDER BY id DESC").bind(user_id).all();
           
           let msg = `👤 <b>وضعیت من</b>\n\n`;
           msg += `📝 <b>نام ثبت شده:</b> ${uRow && uRow.first_name ? uRow.first_name : first_name}\n`;
@@ -948,7 +926,6 @@ export default {
           const cfRes = await updateCloudflareExp(domainInput, applyDays, applyHours, applySingle, state.target_user, db);
           
           if (cfRes.success && cfRes.subLink) {
-            await db.prepare("INSERT OR IGNORE INTO admin_domains (domain) VALUES (?)").bind(domainInput).run();
 
             const shamsiNow = getShamsiNow();
             const planName = state.action === 'test' ? `تست ${state.days} روزه` : `سرویس ${state.days} روزه نامحدود (${state.user_type === '1' ? 'یک کاربره' : 'چند کاربره'})`;
@@ -1176,10 +1153,6 @@ export default {
           return new Response('OK');
         }
 
-
-
-
-
         // انتخاب کاربر از لیست پیشنهادی جستجو
         else if (data.startsWith('admuser_')) {
           if (user_id !== ADMIN_ID) return new Response('OK');
@@ -1223,10 +1196,12 @@ export default {
           let mainMsg = `🛠 <b>مدیریت کاربر:</b> ${userLink}\n`;
           mainMsg += `🆔 آیدی: <code>${targetUid}</code>\n`;
           mainMsg += `تعداد سرویس‌ها: ${srvList.length}\n\n`;
-          mainMsg += `آدرس ورکر\nمثال: ${pureWorkerUrl}/\n\n`;
-          mainMsg += `ادرس پنل معمولی باید به این شکل باشه\nمثال: ${pureWorkerUrl}/autologin?pw=88990011\n\n`;
-          mainMsg += `آدرس پنل مخفی باید به این شکل باشه\nمثال: ${pureWorkerUrl}/${CF_ADMIN_PATH}?token=${CF_ADMIN_TOKEN}\n\n`;
-          mainMsg += `لینک اشتراک هوشمند هم باید داخلش باشه\nمثال:\n${smartSubLink}\n\n`;
+          
+          mainMsg += `🌐 <b>آدرس ورکر:</b>\n<code>${pureWorkerUrl}/</code>\n\n`;
+          mainMsg += `📊 <b>لینک پنل معمولی:</b>\n<code>${pureWorkerUrl}/login</code>\n\n`;
+          mainMsg += `🕵️‍♂️ <b>لینک پنل مخفی:</b>\n<code>${pureWorkerUrl}/${CF_ADMIN_PATH}?token=${CF_ADMIN_TOKEN}</code>\n\n`;
+          mainMsg += `🔗 <b>لینک اشتراک هوشمند:</b>\n<code>${smartSubLink}</code>\n\n`;
+          
           mainMsg += `👇 در حال مدیریت سرویس اصلی (آخرین ورکر). دکمه‌های کنترل را در پایین صفحه مشاهده می‌کنید.`;
 
           await sendMessage(ADMIN_ID, mainMsg, adminServiceKeyboard(isSingle, isKsActive));
@@ -1255,10 +1230,7 @@ export default {
         if (data === 'cancel_admin') {
           if (user_id !== ADMIN_ID) return new Response('OK');
           let adminState = await getState(db, ADMIN_ID);
-		  
-		  
-		  
-		  
+          
           if (adminState && adminState.target_user) {
               await clearState(db, adminState.target_user);
               await sendMessage(adminState.target_user, "❌ فرآیند صدور سرویس توسط پشتیبانی لغو شد. می‌توانید مجدداً درخواست دهید.", mainMenu(adminState.target_user));
@@ -1409,84 +1381,10 @@ export default {
 
           await setState(db, ADMIN_ID, { step: 'WAIT_DOMAIN', target_user: targetUser, days, hours, action, user_type: userType });
           
-          const { results: savedDomains } = await db.prepare("SELECT id, domain FROM admin_domains ORDER BY id DESC LIMIT 5").all();
           let admMsg = `🔗 کاربر جدید است. لطفاً <b>آدرس دامنه ورکر (لینک اصلی)</b> را برای اختصاص دادن به این کاربر تایپ و ارسال کنید.`;
-          let mkb = { inline_keyboard: [] };
-          
-          if (savedDomains && savedDomains.length > 0) {
-            admMsg += `\n\n⚡️ یا از دامنه‌های ذخیره شده زیر یکی را انتخاب کنید:`;
-            mkb.inline_keyboard = savedDomains.map(d => [{ text: d.domain, callback_data: `admsel_${d.id}` }]);
-          }
-          mkb.inline_keyboard.push([{ text: "❌ انصراف از این عملیات", callback_data: "cancel_admin" }]);
+          let mkb = { inline_keyboard: [[{ text: "❌ انصراف از این عملیات", callback_data: "cancel_admin" }]] };
           
           await sendMessage(ADMIN_ID, admMsg, mkb);
-        }
-
-        // ================= شارژ روی دامنه‌های ذخیره‌شده ادمین =================
-        else if (data.startsWith('admsel_')) {
-          if (user_id !== ADMIN_ID) return new Response('OK');
-          const domain_id = data.split('_')[1];
-          const row = await db.prepare("SELECT domain FROM admin_domains WHERE id = ?").bind(domain_id).first();
-          if (row) {
-            
-            let normalizedDomain = row.domain.trim();
-            if (!normalizedDomain.startsWith('http')) normalizedDomain = 'https://' + normalizedDomain;
-            normalizedDomain = normalizedDomain.replace(/\/$/, "");
-
-            const processState = await getState(db, ADMIN_ID);
-
-            if (processState) {
-                const duplicateCheck = await db.prepare("SELECT user_id FROM services WHERE cf_domain = ? AND user_id != ? LIMIT 1").bind(normalizedDomain, processState.target_user).first();
-                if (duplicateCheck) {
-                    await sendMessage(ADMIN_ID, `❌ <b>خطای امنیتی:</b> این ورکر ذخیره‌شده (<code>${normalizedDomain}</code>) متعلق به کاربر دیگری (آیدی: <a href="tg://user?id=${duplicateCheck.user_id}">${duplicateCheck.user_id}</a>) است.\nعملیات لغو شد.`);
-                    return new Response('OK');
-                }
-
-                await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `⏳ در حال اعمال تنظیمات روی دامنه:\n${normalizedDomain}`, parse_mode: "HTML" });
-                
-                let applyDays = processState.days;
-                let applyHours = processState.hours;
-                let applySingle = processState.user_type === '1';
-
-                if (processState.action === 'test') {
-                  applyHours = parseInt(applyDays) * 24;
-                  applyDays = 0;
-                  applySingle = true; 
-                }
-
-                const cfRes = await updateCloudflareExp(normalizedDomain, applyDays, applyHours, applySingle, processState.target_user, db);
-                
-                if (cfRes.success && cfRes.subLink) {
-                  const shamsiNow = getShamsiNow();
-                  const planName = processState.action === 'test' ? `تست ${processState.days} روزه` : `سرویس ${processState.days} روزه نامحدود (${processState.user_type === '1' ? 'یک کاربره' : 'چند کاربره'})`;
-                  const planTypeDb = processState.action === 'test' ? "اکانت تست (رایگان)" : "Normal";
-                  
-                  if (processState.action === 'test') {
-                    await db.prepare("INSERT INTO users (user_id, last_test_date) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_test_date = excluded.last_test_date").bind(processState.target_user, getShamsiDateOnly()).run();
-                  } 
-                  
-                  await db.prepare("INSERT INTO services (user_id, plan_days, plan_type, cf_domain, sub_link, exp_date, status, purchase_date_shamsi) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-                      .bind(processState.target_user, processState.days, planTypeDb, normalizedDomain, cfRes.subLink, cfRes.newExpDate, 'ACTIVE', shamsiNow).run();
-                  
-                  await clearState(db, processState.target_user);
-
-                  const uRow = await db.prepare("SELECT first_name, username FROM users WHERE user_id = ?").bind(processState.target_user).first();
-                  const userLink = getUserLink(processState.target_user, uRow ? uRow.first_name : "کاربر", uRow ? uRow.username : "");
-
-                  const userCaption = `✅ <b>سرویس اختصاصی شما آماده و فعال شد!</b>\n\n👤 <b>کاربر:</b> ${userLink}\n🆔 <b>آیدی:</b> <code>${processState.target_user}</code>\n📦 <b>بسته خریداری شده:</b> ${planName}\n📅 <b>تاریخ ثبت:</b> ${shamsiNow}\n\n🔗 <b>لینک سابسکریپشن شما:</b>\n<code>${cfRes.subLink}</code>\n\n💡 <i>از دکمه‌های زیر برای افزودن سریع به برنامه استفاده کنید.</i>`;
-                  await callTelegram('sendPhoto', { chat_id: processState.target_user, photo: getQRUrl(cfRes.subLink), caption: userCaption, parse_mode: 'HTML', reply_markup: getImportKeyboard(cfRes.subLink, botOrigin) });
-                  await sendMessage(processState.target_user, "✅ درخواست شما تایید و اعمال شد. به منوی اصلی بازگشتید.", mainMenu(processState.target_user));
-                  
-                  const adminCaption = `✅ <b>تحویل سرویس به کاربر با موفقیت انجام شد.</b>\n\n👤 <b>کاربر:</b> ${userLink}\n🆔 <b>آیدی:</b> <code>${processState.target_user}</code>\n📦 <b>بسته:</b> ${planName}\n🔗 <b>لینک:</b>\n<code>${cfRes.subLink}</code>`;
-                  await callTelegram('sendPhoto', { chat_id: ADMIN_ID, photo: getQRUrl(cfRes.subLink), caption: adminCaption, parse_mode: 'HTML' });
-                  
-                  await clearState(db, ADMIN_ID);
-                } else {
-                  const errKb = { inline_keyboard: [[{ text: "❌ انصراف از این عملیات", callback_data: "cancel_admin" }]] };
-                  await sendMessage(ADMIN_ID, `❌ <b>خطا در ارتباط با ورکر!</b>\n💬 <b>دلیل خطا:</b> ${cfRes.error}\n\n💡 <i>لطفاً آدرس صحیح دامنه ورکر را مجدداً ارسال کنید یا عملیات را لغو کنید.</i>`, errKb);
-                }
-            }
-          }
         }
 
         await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
