@@ -545,22 +545,50 @@ export default {
           const isKsActive = workerData.killSwitch === true;
           const isSingle = targetSrv.plan_type.includes('یک کاربره');
 
+
+
+
+
+
+
+
           // آماده‌سازی آدرس پایه ورکر
           let apiDomainMain = targetSrv.cf_domain.trim();
           if (!apiDomainMain.startsWith('http')) apiDomainMain = 'https://' + apiDomainMain;
           apiDomainMain = apiDomainMain.replace(/\/$/, "");
+
+          // استخراج آدرس خالص ورکر (حذف پروکسی در صورت وجود برای نمایش صحیح لینک‌ها)
+          let pureWorkerUrl = apiDomainMain;
+          if (pureWorkerUrl.includes("?url=")) {
+              pureWorkerUrl = decodeURIComponent(pureWorkerUrl.split("?url=")[1]).replace(/\/$/, "");
+          }
+
+          // دریافت لینک هوشمند از دیتابیس و پاک‌سازی آن
+          let smartSubLink = targetSrv.sub_link;
+          if (!smartSubLink) {
+              smartSubLink = `${pureWorkerUrl}/sub`; // در صورتی که توکن ذخیره نشده باشد
+          } else if (smartSubLink.includes("?url=")) {
+              smartSubLink = decodeURIComponent(smartSubLink.split("?url=")[1]).replace(/\/$/, "");
+          }
 
           // ساخت پیام اصلی دقیقاً با فرمت خواسته‌شده
           let mainMsg = `🛠 <b>مدیریت کاربر:</b> ${userLink}\n`;
           mainMsg += `🆔 آیدی: <code>${targetUid}</code>\n`;
           mainMsg += `تعداد سرویس‌ها: ${srvList.length}\n\n`;
           
-          mainMsg += `ادرس ورکر\n${apiDomainMain}/\n\n`;
-          mainMsg += `ادرس پنل معمولی\n${apiDomainMain}/autologin?pw=88990011\n\n`;
-          mainMsg += `آدرس پنل مخفی\n${apiDomainMain}/${CF_ADMIN_PATH}?token=${CF_ADMIN_TOKEN}\n\n`;
-          mainMsg += `لینک اشتراک هوشمند\n${targetSrv.sub_link || apiDomainMain + '/sub'}\n\n`;
+          mainMsg += `آدرس ورکر\nمثال: ${pureWorkerUrl}/\n\n`;
+          mainMsg += `ادرس پنل معمولی باید به این شکل باشه\nمثال: ${pureWorkerUrl}/autologin?pw=88990011\n\n`;
+          mainMsg += `آدرس پنل مخفی باید به این شکل باشه\nمثال: ${pureWorkerUrl}/${CF_ADMIN_PATH}?token=${CF_ADMIN_TOKEN}\n\n`;
+          mainMsg += `لینک اشتراک هومشند هم باید داخلش باشه\nمثال:\n${smartSubLink}\n\n`;
           
           mainMsg += `👇 در حال مدیریت سرویس اصلی (آخرین ورکر). دکمه‌های کنترل را در پایین صفحه مشاهده می‌کنید.`;
+
+
+
+
+
+
+
 
           await sendMessage(ADMIN_ID, mainMsg, adminServiceKeyboard(isSingle, isKsActive));
 
