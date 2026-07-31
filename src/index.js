@@ -404,11 +404,11 @@ export default {
         }
 
         // دکمه مدیریت کاربر
-        if (text === "🛠 مدیریت سرویس‌های کاربر" && user_id === ADMIN_ID) {
-          await setState(db, ADMIN_ID, { step: 'WAIT_ADMIN_SEARCH_USER' });
-          await sendMessage(chat_id, "🔍 لطفاً <b>آیدی عددی</b>، <b>نام/نام خانوادگی</b>، <b>یوزرنیم</b> یا <b>آدرس ورکر</b> کاربر را جهت جستجو ارسال کنید:", pendingMenu());
-          return new Response('OK');
-        }
+		if (text === "🛠 مدیریت سرویس‌های کاربر" && user_id === ADMIN_ID) {
+		  await setState(db, ADMIN_ID, { step: 'WAIT_ADMIN_SEARCH_USER' });
+		  await sendMessage(chat_id, "🔍 لطفاً <b>آیدی عددی</b>، <b>یوزرنیم</b> یا <b>آدرس ورکر</b> کاربر را جهت جستجو ارسال کنید:", pendingMenu());
+		  return new Response('OK');
+		}
 
         // اعمال کنترل‌های پنل مدیریت روی دکمه‌های ثابت
         if (user_id === ADMIN_ID && state && state.step === 'MANAGE_FIXED_ACTIONS') {
@@ -504,23 +504,25 @@ export default {
             FROM users u
             LEFT JOIN services s ON u.user_id = s.user_id
             WHERE CAST(u.user_id AS TEXT) LIKE ? 
-               OR u.first_name LIKE ? 
                OR u.username LIKE ? 
                OR s.cf_domain LIKE ?
             LIMIT 10
-          `).bind(`%${searchTerm}%`, `%${searchTerm}%`, `%${searchTerm}%`, `%${searchTerm}%`).all();
+          `).bind(`%${searchTerm}%`, `%${searchTerm}%`, `%${searchTerm}%`).all();
 
           if (!foundUsers || foundUsers.length === 0) {
             await sendMessage(ADMIN_ID, "❌ هیچ کاربری با این مشخصات یافت نشد. لطفاً عبارت دیگری جستجو کنید.");
             return new Response('OK');
           }
 
+          // تولید دکمه‌های شیشه‌ای برای کلیک کردن ادمین اگر چند کاربر پیدا شد
           if (foundUsers.length > 1) {
-            let msgList = "🔍 <b>چندین کاربر یافت شد. لطفاً آیدی دقیق کاربر مورد نظر را کپی و مجدداً ارسال کنید:</b>\n\n";
+            let msgList = "🔍 <b>چندین کاربر یافت شد. لطفاً روی کاربر مورد نظر کلیک کنید:</b>\n\n";
+            let inline_keyboard = [];
             foundUsers.forEach(u => {
-              msgList += `👤 ${u.first_name} (@${u.username || 'ندارد'}) ➡️ <code>${u.user_id}</code>\n`;
+              let btnText = `👤 ${u.first_name || 'کاربر'} ` + (u.username ? `(@${u.username})` : `(${u.user_id})`);
+              inline_keyboard.push([{ text: btnText, callback_data: `admuser_${u.user_id}` }]);
             });
-            await sendMessage(ADMIN_ID, msgList);
+            await sendMessage(ADMIN_ID, msgList, { inline_keyboard });
             return new Response('OK');
           }
 
@@ -533,8 +535,6 @@ export default {
             return new Response('OK');
           }
 
-
-          // ذخیره آخرین سرویس برای اعمال اکشن‌های کیبورد ثابت
           const targetSrv = srvList[0];
           await setState(db, ADMIN_ID, { step: 'MANAGE_FIXED_ACTIONS', service_id: targetSrv.id });
 
@@ -545,33 +545,22 @@ export default {
           const isKsActive = workerData.killSwitch === true;
           const isSingle = targetSrv.plan_type.includes('یک کاربره');
 
-
-
-
-
-
-
-
-          // آماده‌سازی آدرس پایه ورکر
           let apiDomainMain = targetSrv.cf_domain.trim();
           if (!apiDomainMain.startsWith('http')) apiDomainMain = 'https://' + apiDomainMain;
           apiDomainMain = apiDomainMain.replace(/\/$/, "");
 
-          // استخراج آدرس خالص ورکر (حذف پروکسی در صورت وجود برای نمایش صحیح لینک‌ها)
           let pureWorkerUrl = apiDomainMain;
           if (pureWorkerUrl.includes("?url=")) {
               pureWorkerUrl = decodeURIComponent(pureWorkerUrl.split("?url=")[1]).replace(/\/$/, "");
           }
 
-          // دریافت لینک هوشمند از دیتابیس و پاک‌سازی آن
           let smartSubLink = targetSrv.sub_link;
           if (!smartSubLink) {
-              smartSubLink = `${pureWorkerUrl}/sub`; // در صورتی که توکن ذخیره نشده باشد
+              smartSubLink = `${pureWorkerUrl}/sub`;
           } else if (smartSubLink.includes("?url=")) {
               smartSubLink = decodeURIComponent(smartSubLink.split("?url=")[1]).replace(/\/$/, "");
           }
 
-          // ساخت پیام اصلی دقیقاً با فرمت خواسته‌شده
           let mainMsg = `🛠 <b>مدیریت کاربر:</b> ${userLink}\n`;
           mainMsg += `🆔 آیدی: <code>${targetUid}</code>\n`;
           mainMsg += `تعداد سرویس‌ها: ${srvList.length}\n\n`;
@@ -579,20 +568,12 @@ export default {
           mainMsg += `آدرس ورکر\nمثال: ${pureWorkerUrl}/\n\n`;
           mainMsg += `ادرس پنل معمولی باید به این شکل باشه\nمثال: ${pureWorkerUrl}/autologin?pw=88990011\n\n`;
           mainMsg += `آدرس پنل مخفی باید به این شکل باشه\nمثال: ${pureWorkerUrl}/${CF_ADMIN_PATH}?token=${CF_ADMIN_TOKEN}\n\n`;
-          mainMsg += `لینک اشتراک هومشند هم باید داخلش باشه\nمثال:\n${smartSubLink}\n\n`;
+          mainMsg += `لینک اشتراک هوشمند هم باید داخلش باشه\nمثال:\n${smartSubLink}\n\n`;
           
           mainMsg += `👇 در حال مدیریت سرویس اصلی (آخرین ورکر). دکمه‌های کنترل را در پایین صفحه مشاهده می‌کنید.`;
 
-
-
-
-
-
-
-
           await sendMessage(ADMIN_ID, mainMsg, adminServiceKeyboard(isSingle, isKsActive));
 
-          // نمایش لیست سرویس‌های کاربر در پیام‌های جداگانه
           for (const s of srvList) {
             let expView = "نامشخص";
             if (s.exp_date) {
@@ -600,7 +581,6 @@ export default {
                if (!isNaN(d)) expView = new Intl.DateTimeFormat('fa-IR', { timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(d);
             }
 
-            // محاسبه قیمت بر اساس پلن و نوع مصرف
             let planPrice = PLAN_PRICES[s.plan_days] || 0;
             if (s.plan_type.includes('چند کاربره')) {
                 planPrice += 20000;
@@ -612,12 +592,28 @@ export default {
             srvMsg += `🛍 <b>اسم سرویس:</b> ${s.plan_days} روزه (${s.plan_type})\n`;
             srvMsg += `💳 <b>مبلغ خرید:</b> ${priceText}`;
             
-            // فقط دکمه حذف زیر پست باقی می‌ماند
             let kb = { inline_keyboard: [ [ { text: "🗑 حذف سرویس", callback_data: `admdel_${s.id}` } ] ] };
             await sendMessage(ADMIN_ID, srvMsg, kb);
           }
           return new Response('OK');
         }
+		
+		
+		
+		
+		
+		
+		
+		
+		
+		
+		
+		
+		
+		
+		
+		
+		
 
         // تمدید سرویس توسط ادمین (و آپدیت دکمه درجا)
         if (user_id === ADMIN_ID && state && state.step === 'WAIT_ADMIN_ADD_DAYS') {
@@ -1180,9 +1176,89 @@ export default {
           return new Response('OK');
         }
 
+
+
+
+
+        // انتخاب کاربر از لیست پیشنهادی جستجو
+        else if (data.startsWith('admuser_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const targetUid = data.split('_')[1];
+
+          await callTelegram('deleteMessage', { chat_id, message_id: msg_id });
+
+          const uRow = await db.prepare("SELECT first_name, username FROM users WHERE user_id = ?").bind(targetUid).first();
+          const { results: srvList } = await db.prepare("SELECT * FROM services WHERE user_id = ? ORDER BY id DESC").bind(targetUid).all();
+
+          if (!srvList || srvList.length === 0) {
+            await sendMessage(ADMIN_ID, `❌ کاربر یافت شد اما هیچ سرویسی برای آیدی <code>${targetUid}</code> ثبت نشده است.`, adminPanelMenu());
+            await clearState(db, ADMIN_ID);
+            return new Response('OK');
+          }
+
+          const targetSrv = srvList[0];
+          await setState(db, ADMIN_ID, { step: 'MANAGE_FIXED_ACTIONS', service_id: targetSrv.id });
+
+          const userLink = getUserLink(targetUid, uRow ? uRow.first_name : "کاربر", uRow ? uRow.username : "");
+          const workerData = await getWorkerStatus(targetSrv.cf_domain);
+          const isKsActive = workerData.killSwitch === true;
+          const isSingle = targetSrv.plan_type.includes('یک کاربره');
+
+          let apiDomainMain = targetSrv.cf_domain.trim();
+          if (!apiDomainMain.startsWith('http')) apiDomainMain = 'https://' + apiDomainMain;
+          apiDomainMain = apiDomainMain.replace(/\/$/, "");
+
+          let pureWorkerUrl = apiDomainMain;
+          if (pureWorkerUrl.includes("?url=")) {
+              pureWorkerUrl = decodeURIComponent(pureWorkerUrl.split("?url=")[1]).replace(/\/$/, "");
+          }
+
+          let smartSubLink = targetSrv.sub_link;
+          if (!smartSubLink) {
+              smartSubLink = `${pureWorkerUrl}/sub`;
+          } else if (smartSubLink.includes("?url=")) {
+              smartSubLink = decodeURIComponent(smartSubLink.split("?url=")[1]).replace(/\/$/, "");
+          }
+
+          let mainMsg = `🛠 <b>مدیریت کاربر:</b> ${userLink}\n`;
+          mainMsg += `🆔 آیدی: <code>${targetUid}</code>\n`;
+          mainMsg += `تعداد سرویس‌ها: ${srvList.length}\n\n`;
+          mainMsg += `آدرس ورکر\nمثال: ${pureWorkerUrl}/\n\n`;
+          mainMsg += `ادرس پنل معمولی باید به این شکل باشه\nمثال: ${pureWorkerUrl}/autologin?pw=88990011\n\n`;
+          mainMsg += `آدرس پنل مخفی باید به این شکل باشه\nمثال: ${pureWorkerUrl}/${CF_ADMIN_PATH}?token=${CF_ADMIN_TOKEN}\n\n`;
+          mainMsg += `لینک اشتراک هوشمند هم باید داخلش باشه\nمثال:\n${smartSubLink}\n\n`;
+          mainMsg += `👇 در حال مدیریت سرویس اصلی (آخرین ورکر). دکمه‌های کنترل را در پایین صفحه مشاهده می‌کنید.`;
+
+          await sendMessage(ADMIN_ID, mainMsg, adminServiceKeyboard(isSingle, isKsActive));
+
+          for (const s of srvList) {
+            let expView = "نامشخص";
+            if (s.exp_date) {
+               const d = new Date(s.exp_date);
+               if (!isNaN(d)) expView = new Intl.DateTimeFormat('fa-IR', { timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(d);
+            }
+            let planPrice = PLAN_PRICES[s.plan_days] || 0;
+            if (s.plan_type.includes('چند کاربره')) planPrice += 20000;
+            let priceText = planPrice > 0 ? `${planPrice.toLocaleString('fa-IR')} تومان` : "تست / رایگان";
+
+            let srvMsg = `📦 <b>شناسه سرویس:</b> #${s.id}\n`;
+            srvMsg += `⏳ <b>انقضا:</b> ${expView}\n`;
+            srvMsg += `🛍 <b>اسم سرویس:</b> ${s.plan_days} روزه (${s.plan_type})\n`;
+            srvMsg += `💳 <b>مبلغ خرید:</b> ${priceText}`;
+            
+            let kb = { inline_keyboard: [ [ { text: "🗑 حذف سرویس", callback_data: `admdel_${s.id}` } ] ] };
+            await sendMessage(ADMIN_ID, srvMsg, kb);
+          }
+          return new Response('OK');
+        }
+
         if (data === 'cancel_admin') {
           if (user_id !== ADMIN_ID) return new Response('OK');
           let adminState = await getState(db, ADMIN_ID);
+		  
+		  
+		  
+		  
           if (adminState && adminState.target_user) {
               await clearState(db, adminState.target_user);
               await sendMessage(adminState.target_user, "❌ فرآیند صدور سرویس توسط پشتیبانی لغو شد. می‌توانید مجدداً درخواست دهید.", mainMenu(adminState.target_user));
