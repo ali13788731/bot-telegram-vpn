@@ -548,7 +548,15 @@ export default {
                if (!isNaN(d)) expView = new Intl.DateTimeFormat('fa-IR', { timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(d);
             }
 
-            let srvMsg = `📦 <b>شناسه سرویس:</b> #${s.id}\n🌐 <b>ورکر:</b> <code>${s.cf_domain}</code>\n⏳ <b>انقضا:</b> ${expView}`;
+            let apiDomain = s.cf_domain.trim();
+            if (!apiDomain.startsWith('http')) apiDomain = 'https://' + apiDomain;
+            apiDomain = apiDomain.replace(/\/$/, "");
+
+            let srvMsg = `📦 <b>شناسه سرویس:</b> #${s.id}\n`;
+            srvMsg += `⏳ <b>انقضا:</b> ${expView}\n\n`;
+            srvMsg += `🔗 <b>آدرس ورکر (سابسکریپشن):</b>\n<code>${s.sub_link || apiDomain + '/sub'}</code>\n\n`;
+            srvMsg += `🕵️‍♂️ <b>آدرس پنل مخفی:</b>\n<code>${apiDomain}</code>\n\n`;
+            srvMsg += `⚙️ <b>آدرس پنل معمولی:</b>\n<code>${apiDomain}/${CF_ADMIN_PATH}?token=${CF_ADMIN_TOKEN}</code>`;
             
             // فقط دکمه حذف زیر پست باقی می‌ماند
             let kb = { inline_keyboard: [ [ { text: "🗑 حذف سرویس", callback_data: `admdel_${s.id}` } ] ] };
