@@ -29,6 +29,34 @@ function getShamsiDateOnly() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tehran' }).format(now);
 }
 
+// ================= اعتبارسنجی آدرس ورکر قبل از ثبت/ویرایش =================
+async function validateWorkerDomain(domain) {
+  let apiDomain = domain.trim();
+  if (!apiDomain.startsWith('http')) apiDomain = 'https://' + apiDomain;
+  apiDomain = apiDomain.replace(/\/$/, "");
+  if (apiDomain.includes("?url=")) apiDomain = decodeURIComponent(apiDomain.split("?url=")[1]).replace(/\/$/, "");
+
+  const url = `${apiDomain}/${CF_ADMIN_PATH}?token=${CF_ADMIN_TOKEN}`;
+  try {
+    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: "getData" }) });
+    if (!res.ok) {
+      return { success: false, error: `پاسخ سرور ${res.status} (احتمالاً آدرس، مسیر ادمین یا توکن اشتباه است)` };
+    }
+    let json;
+    try {
+      json = await res.json();
+    } catch (e) {
+      return { success: false, error: "پاسخ دریافتی از این آدرس معتبر نیست (JSON نامعتبر). احتمالاً این آدرس یک ورکر معتبر نیست." };
+    }
+    if (!json || typeof json.data === 'undefined') {
+      return { success: false, error: "این آدرس یک ورکر معتبر با توکن ادمین صحیح نیست." };
+    }
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: `عدم برقراری ارتباط با این آدرس (${e.message})` };
+  }
+}
+
 // ================= توابع کاربردی =================
 function getQRUrl(text) {
   return `https://quickchart.io/qr?text=${encodeURIComponent(text)}&margin=2&size=400`;
@@ -998,6 +1026,15 @@ export default {
           if (duplicateCheck) {
               const errKb = { inline_keyboard: [[{ text: "❌ انصراف از این عملیات", callback_data: "cancel_admin" }]] };
               await sendMessage(ADMIN_ID, `❌ <b>خطای امنیتی: ورکر تکراری!</b>\n\n⚠️ این ورکر (<code>${domainInput}</code>) قبلاً برای کاربر دیگری ثبت شده است.\n👤 آیدی صاحب فعلی: <a href="tg://user?id=${duplicateCheck.user_id}">${duplicateCheck.user_id}</a>\n\nلطفاً یک ورکر جدید وارد کنید یا عملیات را لغو کنید.`, errKb);
+              return new Response('OK');
+          }
+
+          await sendMessage(ADMIN_ID, "⏳ در حال بررسی اعتبار و اتصال به آدرس ورکر جدید...");
+
+          const validation = await validateWorkerDomain(domainInput);
+          if (!validation.success) {
+              const errKb = { inline_keyboard: [[{ text: "❌ انصراف از این عملیات", callback_data: "cancel_admin" }]] };
+              await sendMessage(ADMIN_ID, `❌ <b>آدرس ورکر تایید نشد!</b>\n\n💬 <b>دلیل خطا:</b> ${validation.error}\n\n💡 لطفاً یک آدرس صحیح و در دسترس وارد کنید یا عملیات را لغو کنید.`, errKb);
               return new Response('OK');
           }
 
