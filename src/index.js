@@ -219,14 +219,14 @@ function daysKeyboard() {
   return {
     inline_keyboard: [
       [
-        { text: `۵ روزه (${(PLAN_PRICES[5]/1000).toLocaleString('fa-IR')} ه.ت)`, callback_data: "plan_5" },
-        { text: `۱ روزه (${(PLAN_PRICES[1]/1000).toLocaleString('fa-IR')} ه.ت)`, callback_data: "plan_1" }
+        { text: `۵ روزه نامحدود (${(PLAN_PRICES[5]/1000).toLocaleString('fa-IR')} ه.ت)`, callback_data: "plan_5" },
+        { text: `۱ روزه (تست)`, callback_data: "plan_1" }
       ],
       [
-        { text: `۳۰ روزه (${(PLAN_PRICES[30]/1000).toLocaleString('fa-IR')} ه.ت)`, callback_data: "plan_30" },
-        { text: `۱۰ روزه (${(PLAN_PRICES[10]/1000).toLocaleString('fa-IR')} ه.ت)`, callback_data: "plan_10" }
+        { text: `۳۰ روزه نامحدود (${(PLAN_PRICES[30]/1000).toLocaleString('fa-IR')} ه.ت)`, callback_data: "plan_30" },
+        { text: `۱۰ روزه نامحدود (${(PLAN_PRICES[10]/1000).toLocaleString('fa-IR')} ه.ت)`, callback_data: "plan_10" }
       ],
-      [{ text: `۶۰ روزه ویژه (${(PLAN_PRICES[60]/1000).toLocaleString('fa-IR')} هزار تومان)`, callback_data: "plan_60" }]
+      [{ text: `۶۰ روزه ویژه نامحدود (${(PLAN_PRICES[60]/1000).toLocaleString('fa-IR')} هزار تومان)`, callback_data: "plan_60" }]
     ]
   };
 }
@@ -308,23 +308,54 @@ export default {
           return new Response('OK');
         }
 
-        // جستجوی کاربر در پنل ادمین
+        if (text === "🛠 مدیریت سرویس‌های کاربر" && user_id === ADMIN_ID) {
+          await setState(db, ADMIN_ID, { step: 'WAIT_ADMIN_SEARCH_USER' });
+          await sendMessage(chat_id, "🔍 لطفاً **آیدی عددی**، **نام/نام خانوادگی**، **یوزرنیم** یا **آدرس ورکر** کاربر را جهت جستجو ارسال کنید:", pendingMenu());
+          return new Response('OK');
+        }
+
+        // جستجوی پیشرفته کاربر در پنل ادمین
         if (user_id === ADMIN_ID && state && state.step === 'WAIT_ADMIN_SEARCH_USER') {
-          const targetUid = parseInt(text.trim());
-          if (isNaN(targetUid)) {
-            await sendMessage(ADMIN_ID, "❌ آیدی وارد شده معتبر نیست. لطفاً یک آیدی عددی وارد کنید:");
+          const searchTerm = text.trim();
+          
+          // جستجو در جداول کاربران و سرویس‌ها به صورت همزمان
+          const { results: foundUsers } = await db.prepare(`
+            SELECT DISTINCT u.user_id, u.first_name, u.username
+            FROM users u
+            LEFT JOIN services s ON u.user_id = s.user_id
+            WHERE CAST(u.user_id AS TEXT) LIKE ? 
+               OR u.first_name LIKE ? 
+               OR u.username LIKE ? 
+               OR s.cf_domain LIKE ?
+            LIMIT 10
+          `).bind(`%${searchTerm}%`, `%${searchTerm}%`, `%${searchTerm}%`, `%${searchTerm}%`).all();
+
+          if (!foundUsers || foundUsers.length === 0) {
+            await sendMessage(ADMIN_ID, "❌ هیچ کاربری با این مشخصات یافت نشد. لطفاً عبارت دیگری جستجو کنید.");
             return new Response('OK');
           }
 
+          // اگر بیشتر از یک کاربر پیدا شد، لیست می‌کنیم تا ادمین دقیقاً انتخاب کند
+          if (foundUsers.length > 1) {
+            let msgList = "🔍 <b>چندین کاربر یافت شد. لطفاً آیدی دقیق کاربر مورد نظر را کپی و مجدداً ارسال کنید:</b>\n\n";
+            foundUsers.forEach(u => {
+              msgList += `👤 ${u.first_name} (@${u.username || 'ندارد'}) ➡️ <code>${u.user_id}</code>\n`;
+            });
+            await sendMessage(ADMIN_ID, msgList);
+            return new Response('OK');
+          }
+
+          const targetUid = foundUsers[0].user_id;
           const { results: srvList } = await db.prepare("SELECT * FROM services WHERE user_id = ? ORDER BY id DESC").bind(targetUid).all();
+
           if (!srvList || srvList.length === 0) {
-            await sendMessage(ADMIN_ID, `❌ هیچ سرویسی برای کاربر (آیدی: <code>${targetUid}</code>) یافت نشد.`, adminPanelMenu());
+            await sendMessage(ADMIN_ID, `❌ کاربر یافت شد اما هیچ سرویسی برای آیدی <code>${targetUid}</code> ثبت نشده است.`, adminPanelMenu());
             await clearState(db, ADMIN_ID);
             return new Response('OK');
           }
 
-          const uRow = await db.prepare("SELECT first_name, username FROM users WHERE user_id = ?").bind(targetUid).first();
-          const userLink = getUserLink(targetUid, uRow ? uRow.first_name : "کاربر", uRow ? uRow.username : "");
+          const uRow = foundUsers[0];
+          const userLink = getUserLink(targetUid, uRow.first_name, uRow.username);
 
           await sendMessage(ADMIN_ID, `🛠 <b>مدیریت سرویس‌های کاربر:</b> ${userLink}\n🆔 آیدی: <code>${targetUid}</code>\nتعداد سرویس‌ها: ${srvList.length}`);
 
@@ -335,14 +366,17 @@ export default {
                if (!isNaN(d)) expView = new Intl.DateTimeFormat('fa-IR', { timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(d);
             }
 
-            let srvMsg = `📦 <b>شناسه سرویس:</b> #${s.id}\n🛍 <b>پلن:</b> ${s.plan_days} روزه (${s.plan_type})\n🌐 <b>ورکر:</b> <code>${s.cf_domain}</code>\n⏳ <b>انقضا:</b> ${expView}\nوضعیت: ${s.status === 'ACTIVE' ? '✅ فعال' : '❌ غیرفعال'}`;
+            let srvMsg = `📦 <b>شناسه سرویس:</b> #${s.id}\n🛍 <b>پلن:</b> ${s.plan_days} روزه نامحدود (${s.plan_type})\n🌐 <b>ورکر:</b> <code>${s.cf_domain}</code>\n⏳ <b>انقضا:</b> ${expView}\nوضعیت: ${s.status === 'ACTIVE' ? '✅ فعال' : '❌ غیرفعال'}`;
             let kb = {
               inline_keyboard: [
                 [
-                  { text: s.status === 'ACTIVE' ? "⛔️ قطع سرویس" : "✅ وصل سرویس", callback_data: `admtoggle_${s.id}` },
+                  { text: s.status === 'ACTIVE' ? "⛔️ قطع موقت" : "✅ وصل سرویس", callback_data: `admtoggle_${s.id}` },
                   { text: "➕ تمدید / شارژ", callback_data: `admrenew_${s.id}` }
                 ],
-                [{ text: "🗑 حذف سرویس", callback_data: `admdel_${s.id}` }]
+                [
+                  { text: "🛑 قطع فوری (Kill Switch)", callback_data: `admks_${s.id}` },
+                  { text: "🗑 حذف سرویس", callback_data: `admdel_${s.id}` }
+                ]
               ]
             };
             await sendMessage(ADMIN_ID, srvMsg, kb);
@@ -389,7 +423,7 @@ export default {
           const lastSrv = await db.prepare("SELECT cf_domain FROM services WHERE user_id = ? ORDER BY id DESC LIMIT 1").bind(user_id).first();
           const workerText = lastSrv ? `🌐 <b>ورکر فعلی کاربر:</b> <code>${lastSrv.cf_domain}</code>\n` : `🌐 <b>ورکر فعلی کاربر:</b> ندارد (نیاز به ثبت ورکر جدید)\n`;
           
-          let caption = `🧾 <b>درخواست پرداخت جدید (ویرایش شده توسط کاربر)</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>\n📅 <b>زمان ویرایش:</b> ${getShamsiNow()}\n📦 پلن: ${state.days} روزه - ${state.type || 'سفارشی'}\n${workerText}`;
+          let caption = `🧾 <b>درخواست پرداخت جدید (ویرایش شده توسط کاربر)</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>\n📅 <b>زمان ویرایش:</b> ${getShamsiNow()}\n📦 پلن: ${state.days} روزه نامحدود - ${state.type || 'سفارشی'}\n${workerText}`;
           const isSingle = (state.type && state.type.includes('یک کاربره')) ? '1' : '0';
 
           const admMarkup = { inline_keyboard: [
@@ -442,15 +476,9 @@ export default {
         if (text === "📖 راهنمای پنل مدیریت" && user_id === ADMIN_ID) {
           const guideText = `📖 <b>راهنمای جامع پنل مدیریت:</b>\n\n` +
           `1️⃣ <b>تایید خریدهای جدید:</b> هنگامی که کاربر رسید ارسال کند، دکمه تایید پرداختی ظاهر می‌شود. اگر کاربر قبلاً ورکر داشته باشد به صورت خودکار تمدید می‌شود، در غیر این صورت از شما آدرس ورکر جدید درخواست می‌گردد.\n\n` +
-          `2️⃣ <b>مدیریت سرویس‌های کاربر:</b> روی دکمه «🛠 مدیریت سرویس‌های کاربر» بزنید و آیدی عددی کاربر را بفرستید تا بتوانید سرویس‌ها را قطع/وصل، شارژ یا حذف کنید.\n\n` +
+          `2️⃣ <b>مدیریت سرویس‌های کاربر:</b> روی دکمه «🛠 مدیریت سرویس‌های کاربر» بزنید. حالا می‌توانید بر اساس <b>آیدی، نام، یوزرنیم یا آدرس ورکر</b> جستجو کنید. گزینه‌ی <b>«قطع فوری (Kill Switch)»</b> در لحظه اتصال آن ورکر را قطع می‌کند.\n\n` +
           `3️⃣ <b>پاسخ به پیام‌های شخصی:</b> هنگامی که کاربر پیامی بفرستد، دکمه «💬 پاسخ به این پیام» زیر آن قرار می‌گیرد تا مستقیماً به کاربر پاسخ دهید.`;
           await sendMessage(chat_id, guideText, adminPanelMenu());
-          return new Response('OK');
-        }
-
-        if (text === "🛠 مدیریت سرویس‌های کاربر" && user_id === ADMIN_ID) {
-          await setState(db, ADMIN_ID, { step: 'WAIT_ADMIN_SEARCH_USER' });
-          await sendMessage(chat_id, "🔍 لطفاً **آیدی عددی کاربر (User ID)** را جهت مدیریت سرویس‌ها ارسال کنید:", pendingMenu());
           return new Response('OK');
         }
         
@@ -467,7 +495,7 @@ export default {
 
             userServices.forEach((s, idx) => {
               msgText += `🔹 <b>سرویس ${idx + 1}:</b>\n`;
-              msgText += `🛍 <b>پکیج:</b> ${s.plan_days} روزه (${s.plan_type})\n`;
+              msgText += `🛍 <b>پکیج:</b> ${s.plan_days} روزه نامحدود (${s.plan_type})\n`;
               msgText += `🌐 <b>ورکر:</b> <code>${s.cf_domain}</code>\n`;
               msgText += `📅 <b>تاریخ ثبت:</b> ${s.purchase_date_shamsi}\n`;
               
@@ -505,7 +533,7 @@ export default {
             let service_text = "";
             if (services && services.length > 0) {
               for (const s of services) {
-                service_text += `   🛍 <b>${s.plan_days} روزه (${s.plan_type})</b>\n   🌐 <b>ورکر:</b> <code>${s.cf_domain}</code>\n   📅 <b>تاریخ:</b> ${s.purchase_date_shamsi}\n   ---\n`;
+                service_text += `   🛍 <b>${s.plan_days} روزه نامحدود (${s.plan_type})</b>\n   🌐 <b>ورکر:</b> <code>${s.cf_domain}</code>\n   📅 <b>تاریخ:</b> ${s.purchase_date_shamsi}\n   ---\n`;
               }
             } else {
               service_text = "   - خرید یا تستی نداشته\n";
@@ -620,7 +648,7 @@ export default {
           const lastSrv = await db.prepare("SELECT cf_domain FROM services WHERE user_id = ? ORDER BY id DESC LIMIT 1").bind(user_id).first();
           const workerText = lastSrv ? `🌐 <b>ورکر فعلی کاربر:</b> <code>${lastSrv.cf_domain}</code>\n` : `🌐 <b>ورکر فعلی کاربر:</b> ندارد (نیاز به ثبت ورکر جدید)\n`;
 
-          let caption = `🧾 <b>درخواست پرداخت جدید</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>\n📅 <b>زمان ثبت:</b> ${getShamsiNow()}\n📦 پلن: ${info.days} روزه - ${info.type}\n${workerText}`;
+          let caption = `🧾 <b>درخواست پرداخت جدید</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>\n📅 <b>زمان ثبت:</b> ${getShamsiNow()}\n📦 پلن: ${info.days} روزه نامحدود - ${info.type}\n${workerText}`;
           const isSingle = info.type.includes('یک کاربره') ? '1' : '0';
           
           const admMarkup = { inline_keyboard: [
@@ -672,7 +700,7 @@ export default {
             await db.prepare("INSERT OR IGNORE INTO admin_domains (domain) VALUES (?)").bind(domainInput).run();
 
             const shamsiNow = getShamsiNow();
-            const planName = state.action === 'test' ? `تست ${state.days} روزه` : `سرویس ${state.days} روزه (${state.user_type === '1' ? 'یک کاربره' : 'چند کاربره'})`;
+            const planName = state.action === 'test' ? `تست ${state.days} روزه` : `سرویس ${state.days} روزه نامحدود (${state.user_type === '1' ? 'یک کاربره' : 'چند کاربره'})`;
             const planTypeDb = state.action === 'test' ? "اکانت تست (رایگان)" : "Normal";
             
             if (state.action === 'test') {
@@ -763,7 +791,7 @@ export default {
           return new Response('OK');
         }
 
-        // تغییر وضعیت سرویس (قطع/وصل)
+        // تغییر وضعیت سرویس (قطع/وصل موقت)
         if (data.startsWith('admtoggle_')) {
           if (user_id !== ADMIN_ID) return new Response('OK');
           const srvId = data.split('_')[1];
@@ -777,6 +805,34 @@ export default {
               await sendMessage(srv.user_id, `⚠️ <b>اطلاعیه:</b> سرویس #${srv.id} شما توسط پشتیبانی موقتاً غیرفعال گردید.`);
             } else {
               await sendMessage(srv.user_id, `✅ <b>اطلاعیه:</b> سرویس #${srv.id} شما مجدداً فعال گردید.`);
+            }
+          }
+          return new Response('OK');
+        }
+
+        // قطع فوری از سمت ورکر (Kill Switch) در لحظه
+        if (data.startsWith('admks_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const srvId = data.split('_')[1];
+          const srv = await db.prepare("SELECT * FROM services WHERE id = ?").bind(srvId).first();
+          if (srv) {
+            let apiDomain = srv.cf_domain.trim();
+            if (!apiDomain.startsWith('http')) apiDomain = 'https://' + apiDomain;
+            apiDomain = apiDomain.replace(/\/$/, "");
+            if (apiDomain.includes("?url=")) apiDomain = decodeURIComponent(apiDomain.split("?url=")[1]).replace(/\/$/, "");
+
+            const url = `${apiDomain}/${CF_ADMIN_PATH}?token=${CF_ADMIN_TOKEN}`;
+            try {
+              const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: "toggleKillSwitch" }) });
+              if (res.ok) {
+                await db.prepare("UPDATE services SET status = 'INACTIVE' WHERE id = ?").bind(srvId).run();
+                await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: `✅ کیل‌سوئیچ فعال و سرویس فوراً از روی ورکر قطع شد.`, show_alert: true });
+                await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `🛑 <b>سرویس ورکر <code>${srv.cf_domain}</code> با موفقیت در لحظه قطع شد (Kill Switch فعال گردید).</b>`, parse_mode: "HTML" });
+              } else {
+                 await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: `❌ خطا در ارتباط با ورکر. احتمالاً توکن مسدود است.`, show_alert: true });
+              }
+            } catch(e) {
+              await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: `❌ خطا در شبکه و عدم برقراری ارتباط با دامنه.`, show_alert: true });
             }
           }
           return new Response('OK');
@@ -841,7 +897,7 @@ export default {
         else if (data.startsWith('users_')) {
           const userType = data.split('_')[1];
           state.user_type = userType;
-          state.type = (userType === '1') ? "یک کاربره" : "چند کاربره";
+          state.type = (userType === '1') ? "تک کاربره (نامحدود)" : "چند کاربره (نامحدود)";
           state.step = 'WAIT_RECEIPT';
           state.timer_start = Date.now();
           await setState(db, user_id, state);
@@ -849,7 +905,7 @@ export default {
           const planPrice = PLAN_PRICES[state.days] || 0;
           const formattedPrice = planPrice.toLocaleString('fa-IR');
           
-          const factor = `💳 <b>فاکتور سرویس ${state.days} روزه (${state.type})</b>\n💵 مبلغ سرویس: <b>${formattedPrice} تومان</b>\n\nلطفاً مبلغ فوق را به شماره کارت زیر واریز کرده و <b>عکس رسید تراکنش</b> را همینجا ارسال کنید:\n\n💳 <code>${CARD_NUMBER}</code>\n\n⏱ <i>شما ۱۰ دقیقه برای ارسال رسید فرصت دارید. (تا زمان تایید ادمین، امکان ویرایش عکس وجود دارد)</i>`;
+          const factor = `💳 <b>فاکتور سرویس ${state.days} روزه کاملاً نامحدود (${state.type})</b>\n💵 مبلغ سرویس: <b>${formattedPrice} تومان</b>\n\nلطفاً مبلغ فوق را به شماره کارت زیر واریز کرده و <b>عکس رسید تراکنش</b> را همینجا ارسال کنید:\n\n💳 <code>${CARD_NUMBER}</code>\n\n⏱ <i>شما ۱۰ دقیقه برای ارسال رسید فرصت دارید. (تا زمان تایید ادمین، امکان ارسال مجدد و ویرایش عکس فیش وجود دارد)</i>`;
           await callTelegram('deleteMessage', { chat_id, message_id: msg_id });
           await sendMessage(chat_id, factor, backAndSupportKeyboard());
         }
@@ -908,7 +964,7 @@ export default {
               
               if (cfRes.success && cfRes.subLink) {
                   const shamsiNow = getShamsiNow();
-                  const planName = action === 'test' ? `تست ${days} روزه` : `سرویس ${days} روزه (${applySingle ? 'یک کاربره' : 'چند کاربره'})`;
+                  const planName = action === 'test' ? `تست ${days} روزه` : `سرویس ${days} روزه نامحدود (${applySingle ? 'یک کاربره' : 'چند کاربره'})`;
                   const planTypeDb = action === 'test' ? "اکانت تست (رایگان)" : "Normal";
 
                   if (action === 'test') {
@@ -998,7 +1054,7 @@ export default {
                 
                 if (cfRes.success && cfRes.subLink) {
                   const shamsiNow = getShamsiNow();
-                  const planName = processState.action === 'test' ? `تست ${processState.days} روزه` : `سرویس ${processState.days} روزه (${processState.user_type === '1' ? 'یک کاربره' : 'چند کاربره'})`;
+                  const planName = processState.action === 'test' ? `تست ${processState.days} روزه` : `سرویس ${processState.days} روزه نامحدود (${processState.user_type === '1' ? 'یک کاربره' : 'چند کاربره'})`;
                   const planTypeDb = processState.action === 'test' ? "اکانت تست (رایگان)" : "Normal";
                   
                   if (processState.action === 'test') {
