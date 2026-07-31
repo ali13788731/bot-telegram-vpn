@@ -534,11 +534,6 @@ export default {
           }
 
 
-
-
-
-
-
           // ذخیره آخرین سرویس برای اعمال اکشن‌های کیبورد ثابت
           const targetSrv = srvList[0];
           await setState(db, ADMIN_ID, { step: 'MANAGE_FIXED_ACTIONS', service_id: targetSrv.id });
@@ -560,9 +555,10 @@ export default {
           mainMsg += `🆔 آیدی: <code>${targetUid}</code>\n`;
           mainMsg += `تعداد سرویس‌ها: ${srvList.length}\n\n`;
           
-          mainMsg += `ادرس ورکر\n${apiDomainMain}\n\n`;
-          mainMsg += `ادرس پنل معمولی\n${apiDomainMain}/autologin?pw=${CF_ADMIN_TOKEN}\n\n`;
+          mainMsg += `ادرس ورکر\n${apiDomainMain}/\n\n`;
+          mainMsg += `ادرس پنل معمولی\n${apiDomainMain}/autologin?pw=88990011\n\n`;
           mainMsg += `آدرس پنل مخفی\n${apiDomainMain}/${CF_ADMIN_PATH}?token=${CF_ADMIN_TOKEN}\n\n`;
+          mainMsg += `لینک اشتراک هوشمند\n${targetSrv.sub_link || apiDomainMain + '/sub'}\n\n`;
           
           mainMsg += `👇 در حال مدیریت سرویس اصلی (آخرین ورکر). دکمه‌های کنترل را در پایین صفحه مشاهده می‌کنید.`;
 
