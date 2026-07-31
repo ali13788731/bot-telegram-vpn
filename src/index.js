@@ -40,7 +40,6 @@ function getUserLink(user_id, first_name, username) {
   return `<a href="tg://user?id=${user_id}">${cleanName}</a>${unStr}`;
 }
 
-// تولید دکمه‌های ایمپورت با استفاده از ریدایرکتور داخلی ورکر
 function getImportKeyboard(subLink, botOrigin) {
   const encoded = encodeURIComponent(subLink);
   return {
@@ -69,6 +68,40 @@ async function sendMessage(chat_id, text, reply_markup = null, parse_mode = "HTM
   const body = { chat_id, text, parse_mode };
   if (reply_markup) body.reply_markup = reply_markup;
   return await callTelegram('sendMessage', body);
+}
+
+// تابع کمکی برای آپدیت درجایِ پیام وضعیت سرویس (بدون خروج از منو)
+async function refreshAdminServiceMessage(db, srvId, chat_id, msg_id) {
+  const s = await db.prepare("SELECT * FROM services WHERE id = ?").bind(srvId).first();
+  if (!s) return;
+  
+  let expView = "نامشخص";
+  if (s.exp_date) {
+     const d = new Date(s.exp_date);
+     if (!isNaN(d)) expView = new Intl.DateTimeFormat('fa-IR', { timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(d);
+  }
+
+  let srvMsg = `📦 <b>شناسه سرویس:</b> #${s.id}\n🛍 <b>پلن:</b> ${s.plan_days} روزه نامحدود (${s.plan_type})\n🌐 <b>ورکر:</b> <code>${s.cf_domain}</code>\n⏳ <b>انقضا:</b> ${expView}\nوضعیت: ${s.status === 'ACTIVE' ? '✅ فعال' : '❌ غیرفعال'}`;
+  
+  let ksText = s.status === 'ACTIVE' ? "🛑 قطع فوری (Kill Switch)" : "✅ وصل فوری";
+  let singleMultiText = s.plan_type.includes('یک کاربره') ? "👥 ارتقا به چندکاربره" : "👤 تبدیل به تک‌کاربره";
+  
+  let kb = {
+    inline_keyboard: [
+      [
+        { text: "➕ تمدید / شارژ", callback_data: `admrenew_${s.id}` },
+        { text: "⏳ صفر کردن زمان", callback_data: `admexpire_${s.id}` }
+      ],
+      [
+        { text: ksText, callback_data: `admks_${s.id}` },
+        { text: singleMultiText, callback_data: `admmulti_${s.id}` }
+      ],
+      [
+        { text: "🗑 حذف سرویس", callback_data: `admdel_${s.id}` }
+      ]
+    ]
+  };
+  await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: srvMsg, reply_markup: kb, parse_mode: "HTML" });
 }
 
 // ================= مدیریت وضعیت‌ها (State Machine در D1) =================
@@ -291,7 +324,7 @@ export default {
         await db.prepare("INSERT INTO users (user_id, username, first_name, join_date_shamsi) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET username = excluded.username, first_name = excluded.first_name")
             .bind(user_id, username, first_name, getShamsiNow()).run();
 
-        // دستور شروع و ریست
+        // دستور شروع
         if (text === '/start') {
           await clearState(db, user_id);
           const welcome = `👋 <b>به ربات هوشمند ما خوش آمدید!</b>\n\n💡 <b>هدیه ویژه ما:</b> کاربران جدید برای بار اول یک اکانت <b>تست ۲ روزه (تک‌کاربره)</b> رایگان دریافت می‌کنند. همچنین تمامی کاربران می‌توانند <b>هر ماه یکبار، یک اکانت رایگان ۱ روزه</b> دریافت کنند!\n\nپایداری، سرعت و امنیت را با ما تجربه کنید. لطفاً از منوی زیر یک گزینه را انتخاب کنید 👇`;
@@ -299,7 +332,34 @@ export default {
           return new Response('OK');
         }
 
-        // اگر کاربر در حال پاسخ به ادمین یا در وضعیت ویرایش عکس است
+        // قفل جلوگیری از درخواست مجدد تا پاسخ ادمین و لغو توسط کاربر
+        if (state && state.step === 'PENDING_ADMIN' && user_id !== ADMIN_ID) {
+          if (text === "❌ لغو عملیات") {
+             if (state.admin_message_id) {
+                 await callTelegram('editMessageReplyMarkup', { chat_id: ADMIN_ID, message_id: state.admin_message_id, reply_markup: { inline_keyboard: [] } });
+                 if (state.is_test) {
+                     await callTelegram('editMessageText', { chat_id: ADMIN_ID, message_id: state.admin_message_id, text: "❌ <b>این درخواست توسط کاربر لغو شد.</b>", parse_mode: "HTML" });
+                 } else {
+                     await callTelegram('editMessageCaption', { chat_id: ADMIN_ID, message_id: state.admin_message_id, caption: "❌ <b>این درخواست توسط کاربر لغو شد.</b>", parse_mode: "HTML" });
+                 }
+             }
+             await clearState(db, user_id);
+             await sendMessage(chat_id, "✅ عملیات با موفقیت لغو شد و به منوی اصلی بازگشتید.", mainMenu(user_id));
+          } else if (!msg.photo) {
+             await sendMessage(chat_id, "⏳ <b>شما یک درخواست در حال بررسی دارید!</b>\nمی‌توانید عکس فیش جدید را جهت ویرایش بفرستید یا دکمه «❌ لغو عملیات» را بزنید.", pendingMenu());
+          }
+          if (text === "❌ لغو عملیات") return new Response('OK');
+        }
+
+        // 🟢 هندل سراسری دکمه‌های لغو برای تمام بخش‌ها (به جز PENDING کاربر که بالاتر هندل شد)
+        if (text === "🔙 مرحله قبل" || text === "🏠 بازگشت به منوی اصلی" || text === "🔙 بازگشت به پنل کاربری" || text === "❌ لغو عملیات") {
+          await clearState(db, user_id);
+          const menu = user_id === ADMIN_ID ? adminPanelMenu() : mainMenu(user_id);
+          await sendMessage(chat_id, "🏠 عملیات فعلی لغو شد و به منوی اصلی برگشتید.", menu);
+          return new Response('OK');
+        }
+
+        // اگر ادمین در حال پاسخ به تیکت کاربر است
         if (user_id === ADMIN_ID && state && state.step === 'WAIT_ADMIN_REPLY_TEXT') {
           const targetUid = state.target_user;
           await sendMessage(targetUid, `📩 <b>پاسخ جدید از طرف پشتیبانی:</b>\n\n${text}`);
@@ -314,24 +374,15 @@ export default {
           return new Response('OK');
         }
 
-
-
-
-
-        
         // جستجوی پیشرفته کاربر در پنل ادمین
         if (user_id === ADMIN_ID && state && state.step === 'WAIT_ADMIN_SEARCH_USER') {
           let searchTerm = text.trim();
           
-          // حذف http:// و / انتهایی برای جستجوی دقیق‌تر دامنه در دیتابیس
           searchTerm = searchTerm.replace(/^https?:\/\//i, '').replace(/\/$/, '');
-          
-          // جلوگیری از ارور SQLITE_ERROR مربوط به محدودیت طول الگو در Cloudflare D1
           if (searchTerm.length > 40) {
              searchTerm = searchTerm.substring(0, 40);
           }
           
-          // جستجو در جداول کاربران و سرویس‌ها به صورت همزمان
           const { results: foundUsers } = await db.prepare(`
             SELECT DISTINCT u.user_id, u.first_name, u.username
             FROM users u
@@ -348,7 +399,6 @@ export default {
             return new Response('OK');
           }
 
-          // اگر بیشتر از یک کاربر پیدا شد، لیست می‌کنیم تا ادمین دقیقاً انتخاب کند
           if (foundUsers.length > 1) {
             let msgList = "🔍 <b>چندین کاربر یافت شد. لطفاً آیدی دقیق کاربر مورد نظر را کپی و مجدداً ارسال کنید:</b>\n\n";
             foundUsers.forEach(u => {
@@ -380,14 +430,20 @@ export default {
             }
 
             let srvMsg = `📦 <b>شناسه سرویس:</b> #${s.id}\n🛍 <b>پلن:</b> ${s.plan_days} روزه نامحدود (${s.plan_type})\n🌐 <b>ورکر:</b> <code>${s.cf_domain}</code>\n⏳ <b>انقضا:</b> ${expView}\nوضعیت: ${s.status === 'ACTIVE' ? '✅ فعال' : '❌ غیرفعال'}`;
+            let ksText = s.status === 'ACTIVE' ? "🛑 قطع فوری (Kill Switch)" : "✅ وصل فوری";
+            let singleMultiText = s.plan_type.includes('یک کاربره') ? "👥 ارتقا به چندکاربره" : "👤 تبدیل به تک‌کاربره";
+
             let kb = {
               inline_keyboard: [
                 [
-                  { text: s.status === 'ACTIVE' ? "⛔️ قطع موقت" : "✅ وصل سرویس", callback_data: `admtoggle_${s.id}` },
-                  { text: "➕ تمدید / شارژ", callback_data: `admrenew_${s.id}` }
+                  { text: "➕ تمدید / شارژ", callback_data: `admrenew_${s.id}` },
+                  { text: "⏳ صفر کردن زمان", callback_data: `admexpire_${s.id}` }
                 ],
                 [
-                  { text: "🛑 قطع فوری (Kill Switch)", callback_data: `admks_${s.id}` },
+                  { text: ksText, callback_data: `admks_${s.id}` },
+                  { text: singleMultiText, callback_data: `admmulti_${s.id}` }
+                ],
+                [
                   { text: "🗑 حذف سرویس", callback_data: `admdel_${s.id}` }
                 ]
               ]
@@ -398,24 +454,7 @@ export default {
           return new Response('OK');
         }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        
-
-        // تمدید سرویس توسط ادمین
+        // تمدید سرویس توسط ادمین (و آپدیت دکمه درجا)
         if (user_id === ADMIN_ID && state && state.step === 'WAIT_ADMIN_ADD_DAYS') {
           const daysToAdd = parseInt(text.trim());
           if (isNaN(daysToAdd) || daysToAdd <= 0) {
@@ -433,12 +472,13 @@ export default {
           const cfRes = await updateCloudflareExp(srv.cf_domain, daysToAdd, 0, srv.plan_type.includes('یک کاربره'), srv.user_id, db);
           if (cfRes.success) {
             await db.prepare("UPDATE services SET exp_date = ?, status = 'ACTIVE' WHERE id = ?").bind(cfRes.newExpDate, srv.id).run();
-            
-            const uRow = await db.prepare("SELECT first_name, username FROM users WHERE user_id = ?").bind(srv.user_id).first();
-            const userLink = getUserLink(srv.user_id, uRow ? uRow.first_name : "کاربر", uRow ? uRow.username : "");
-
-            await sendMessage(ADMIN_ID, `✅ سرویس #${srv.id} کاربر ${userLink} به مدت <b>${daysToAdd} روز</b> شارژ/تمدید گردید.`, adminPanelMenu());
+            await sendMessage(ADMIN_ID, `✅ سرویس شناسه #${srv.id} با موفقیت ${daysToAdd} روز شارژ شد.`, adminPanelMenu());
             await sendMessage(srv.user_id, `🎉 <b>سرویس شما تمدید شد!</b>\n\n➕ مقدار <b>${daysToAdd} روز</b> به اعتبار سرویس شما افزوده شد.\n🔗 <b>لینک اتصال:</b>\n<code>${srv.sub_link}</code>`);
+            
+            // رفرش درجا پیام اصلی مدیریت این سرویس
+            if (state.original_msg_id) {
+               await refreshAdminServiceMessage(db, srv.id, ADMIN_ID, state.original_msg_id);
+            }
           } else {
             await sendMessage(ADMIN_ID, `❌ خطا در آپدیت ورکر: ${cfRes.error}`, adminPanelMenu());
           }
@@ -473,31 +513,6 @@ export default {
           return new Response('OK');
         }
 
-        // قفل جلوگیری از درخواست مجدد تا پاسخ ادمین
-        if (state && state.step === 'PENDING_ADMIN' && user_id !== ADMIN_ID) {
-          if (text === "❌ لغو عملیات") {
-             if (state.admin_message_id) {
-                 await callTelegram('editMessageReplyMarkup', { chat_id: ADMIN_ID, message_id: state.admin_message_id, reply_markup: { inline_keyboard: [] } });
-                 if (state.is_test) {
-                     await callTelegram('editMessageText', { chat_id: ADMIN_ID, message_id: state.admin_message_id, text: "❌ <b>این درخواست توسط کاربر لغو شد.</b>", parse_mode: "HTML" });
-                 } else {
-                     await callTelegram('editMessageCaption', { chat_id: ADMIN_ID, message_id: state.admin_message_id, caption: "❌ <b>این درخواست توسط کاربر لغو شد.</b>", parse_mode: "HTML" });
-                 }
-             }
-             await clearState(db, user_id);
-             await sendMessage(chat_id, "✅ عملیات با موفقیت لغو شد و به منوی اصلی بازگشتید.", mainMenu(user_id));
-          } else {
-             await sendMessage(chat_id, "⏳ <b>شما یک درخواست در حال بررسی دارید!</b>\nمی‌توانید عکس فیش جدید را جهت ویرایش بفرستید یا دکمه «❌ لغو عملیات» را بزنید.", pendingMenu());
-          }
-          return new Response('OK');
-        }
-
-        if (text === "🔙 مرحله قبل" || text === "🏠 بازگشت به منوی اصلی" || text === "🔙 بازگشت به پنل کاربری" || text === "❌ لغو عملیات") {
-          await clearState(db, user_id);
-          await sendMessage(chat_id, "🏠 عملیات فعلی لغو شد. به منوی اصلی برگشتید.", mainMenu(user_id));
-          return new Response('OK');
-        }
-
         if (text === "⚙️ ورود به پنل مدیریت حرفه‌ای" && user_id === ADMIN_ID) {
           await sendMessage(chat_id, "👨‍💻 <b>به پنل مدیریت حرفه‌ای خوش آمدید.</b>\nاز گزینه‌های زیر استفاده کنید:", adminPanelMenu());
           return new Response('OK');
@@ -506,7 +521,7 @@ export default {
         if (text === "📖 راهنمای پنل مدیریت" && user_id === ADMIN_ID) {
           const guideText = `📖 <b>راهنمای جامع پنل مدیریت:</b>\n\n` +
           `1️⃣ <b>تایید خریدهای جدید:</b> هنگامی که کاربر رسید ارسال کند، دکمه تایید پرداختی ظاهر می‌شود. اگر کاربر قبلاً ورکر داشته باشد به صورت خودکار تمدید می‌شود، در غیر این صورت از شما آدرس ورکر جدید درخواست می‌گردد.\n\n` +
-          `2️⃣ <b>مدیریت سرویس‌های کاربر:</b> روی دکمه «🛠 مدیریت سرویس‌های کاربر» بزنید. حالا می‌توانید بر اساس <b>آیدی، نام، یوزرنیم یا آدرس ورکر</b> جستجو کنید. گزینه‌ی <b>«قطع فوری (Kill Switch)»</b> در لحظه اتصال آن ورکر را قطع می‌کند.\n\n` +
+          `2️⃣ <b>مدیریت سرویس‌های کاربر:</b> روی دکمه «🛠 مدیریت سرویس‌های کاربر» بزنید. حالا می‌توانید بر اساس <b>آیدی، نام، یوزرنیم یا آدرس ورکر</b> جستجو کنید. گزینه‌های جدید مانند <b>قطع فوری، صفر کردن زمان و تغییر کاربری</b> در همانجا قابل استفاده هستند.\n\n` +
           `3️⃣ <b>پاسخ به پیام‌های شخصی:</b> هنگامی که کاربر پیامی بفرستد، دکمه «💬 پاسخ به این پیام» زیر آن قرار می‌گیرد تا مستقیماً به کاربر پاسخ دهید.`;
           await sendMessage(chat_id, guideText, adminPanelMenu());
           return new Response('OK');
@@ -745,12 +760,10 @@ export default {
             const uRow = await db.prepare("SELECT first_name, username FROM users WHERE user_id = ?").bind(state.target_user).first();
             const userLink = getUserLink(state.target_user, uRow ? uRow.first_name : "کاربر", uRow ? uRow.username : "");
 
-            // ارسال به کاربر
             const userCaption = `✅ <b>سرویس اختصاصی شما آماده و فعال شد!</b>\n\n👤 <b>کاربر:</b> ${userLink}\n🆔 <b>آیدی:</b> <code>${state.target_user}</code>\n📦 <b>بسته:</b> ${planName}\n📅 <b>تاریخ ثبت:</b> ${shamsiNow}\n\n🔗 <b>لینک اتصال سابسکریپشن:</b>\n<code>${cfRes.subLink}</code>\n\n💡 <i>از دکمه‌های زیر برای افزودن سریع به برنامه استفاده کنید یا بارکد را اسکن نمایید.</i>`;
             await callTelegram('sendPhoto', { chat_id: state.target_user, photo: getQRUrl(cfRes.subLink), caption: userCaption, parse_mode: 'HTML', reply_markup: getImportKeyboard(cfRes.subLink, botOrigin) });
             await sendMessage(state.target_user, "✅ درخواست شما تایید و اعمال شد. به منوی اصلی بازگشتید.", mainMenu(state.target_user));
 
-            // ارسال تاییدیه به ادمین
             const adminCaption = `✅ <b>تحویل سرویس به کاربر با موفقیت انجام شد.</b>\n\n👤 <b>کاربر:</b> ${userLink}\n🆔 <b>آیدی:</b> <code>${state.target_user}</code>\n📦 <b>بسته:</b> ${planName}\n🔗 <b>لینک اتصال:</b>\n<code>${cfRes.subLink}</code>`;
             await callTelegram('sendPhoto', { chat_id: ADMIN_ID, photo: getQRUrl(cfRes.subLink), caption: adminCaption, parse_mode: 'HTML' });
             
@@ -790,7 +803,6 @@ export default {
             return new Response('OK');
         }
 
-        // تایید ارسال پیام شخصی توسط کاربر
         if (data === 'confirm_send_msg') {
           if (state && state.message_text) {
             const uRow = await db.prepare("SELECT first_name, username FROM users WHERE user_id = ?").bind(user_id).first();
@@ -812,7 +824,6 @@ export default {
           return new Response('OK');
         }
 
-        // کلیک ادمین برای پاسخ به پیام شخصی
         if (data.startsWith('admreply_')) {
           if (user_id !== ADMIN_ID) return new Response('OK');
           const targetUid = data.split('_')[1];
@@ -821,26 +832,36 @@ export default {
           return new Response('OK');
         }
 
-        // تغییر وضعیت سرویس (قطع/وصل موقت)
-        if (data.startsWith('admtoggle_')) {
+        // صفر کردن زمان (قطع کامل سرویس به دلیل انقضا)
+        if (data.startsWith('admexpire_')) {
           if (user_id !== ADMIN_ID) return new Response('OK');
           const srvId = data.split('_')[1];
           const srv = await db.prepare("SELECT * FROM services WHERE id = ?").bind(srvId).first();
           if (srv) {
-            const newStatus = srv.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
-            await db.prepare("UPDATE services SET status = ? WHERE id = ?").bind(newStatus, srvId).run();
-            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: `وضعیت سرویس به ${newStatus === 'ACTIVE' ? 'فعال' : 'غیرفعال'} تغییر یافت.`, show_alert: true });
+            let apiDomain = srv.cf_domain.trim();
+            if (!apiDomain.startsWith('http')) apiDomain = 'https://' + apiDomain;
+            apiDomain = apiDomain.replace(/\/$/, "");
+            if (apiDomain.includes("?url=")) apiDomain = decodeURIComponent(apiDomain.split("?url=")[1]).replace(/\/$/, "");
+            const url = `${apiDomain}/${CF_ADMIN_PATH}?token=${CF_ADMIN_TOKEN}`;
             
-            if (newStatus === 'INACTIVE') {
-              await sendMessage(srv.user_id, `⚠️ <b>اطلاعیه:</b> سرویس #${srv.id} شما توسط پشتیبانی موقتاً غیرفعال گردید.`);
-            } else {
-              await sendMessage(srv.user_id, `✅ <b>اطلاعیه:</b> سرویس #${srv.id} شما مجدداً فعال گردید.`);
+            const now = new Date();
+            now.setMinutes(now.getMinutes() - 5);
+            const dateStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tehran' }).format(now); 
+            const timeStr = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' }).format(now).substring(0, 5);
+            
+            try {
+               await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: "updateExp", date: dateStr, time: timeStr }) });
+               await db.prepare("UPDATE services SET exp_date = ?, status = 'INACTIVE' WHERE id = ?").bind(now.toISOString(), srvId).run();
+               await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "⏳ زمان سرویس با موفقیت صفر (منقضی) شد.", show_alert: true });
+               await refreshAdminServiceMessage(db, srvId, chat_id, msg_id);
+            } catch(e) {
+               await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ خطا در ارتباط با ورکر", show_alert: true });
             }
           }
           return new Response('OK');
         }
 
-        // قطع فوری از سمت ورکر (Kill Switch) در لحظه
+        // قطع و وصل فوری (Kill Switch)
         if (data.startsWith('admks_')) {
           if (user_id !== ADMIN_ID) return new Response('OK');
           const srvId = data.split('_')[1];
@@ -850,29 +871,56 @@ export default {
             if (!apiDomain.startsWith('http')) apiDomain = 'https://' + apiDomain;
             apiDomain = apiDomain.replace(/\/$/, "");
             if (apiDomain.includes("?url=")) apiDomain = decodeURIComponent(apiDomain.split("?url=")[1]).replace(/\/$/, "");
-
             const url = `${apiDomain}/${CF_ADMIN_PATH}?token=${CF_ADMIN_TOKEN}`;
+
             try {
               const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: "toggleKillSwitch" }) });
               if (res.ok) {
-                await db.prepare("UPDATE services SET status = 'INACTIVE' WHERE id = ?").bind(srvId).run();
-                await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: `✅ کیل‌سوئیچ فعال و سرویس فوراً از روی ورکر قطع شد.`, show_alert: true });
-                await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `🛑 <b>سرویس ورکر <code>${srv.cf_domain}</code> با موفقیت در لحظه قطع شد (Kill Switch فعال گردید).</b>`, parse_mode: "HTML" });
+                const newStatus = srv.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
+                await db.prepare("UPDATE services SET status = ? WHERE id = ?").bind(newStatus, srvId).run();
+                await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: newStatus === 'ACTIVE' ? "✅ سرویس با موفقیت وصل شد." : "🛑 سرویس فوراً قطع شد.", show_alert: true });
+                await refreshAdminServiceMessage(db, srvId, chat_id, msg_id);
               } else {
-                 await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: `❌ خطا در ارتباط با ورکر. احتمالاً توکن مسدود است.`, show_alert: true });
+                 await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ خطا در ارتباط با ورکر.", show_alert: true });
               }
             } catch(e) {
-              await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: `❌ خطا در شبکه و عدم برقراری ارتباط با دامنه.`, show_alert: true });
+              await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ عدم برقراری ارتباط با دامنه.", show_alert: true });
             }
           }
           return new Response('OK');
         }
 
-        // شروع تمدید سرویس توسط ادمین
+        // تغییر تک کاربره و چند کاربره
+        if (data.startsWith('admmulti_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const srvId = data.split('_')[1];
+          const srv = await db.prepare("SELECT * FROM services WHERE id = ?").bind(srvId).first();
+          if (srv) {
+            let apiDomain = srv.cf_domain.trim();
+            if (!apiDomain.startsWith('http')) apiDomain = 'https://' + apiDomain;
+            apiDomain = apiDomain.replace(/\/$/, "");
+            if (apiDomain.includes("?url=")) apiDomain = decodeURIComponent(apiDomain.split("?url=")[1]).replace(/\/$/, "");
+            const url = `${apiDomain}/${CF_ADMIN_PATH}?token=${CF_ADMIN_TOKEN}`;
+            
+            try {
+               await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: "toggleUser" }) });
+               const isSingle = srv.plan_type.includes('یک کاربره');
+               const newPlanType = isSingle ? srv.plan_type.replace('یک کاربره', 'چند کاربره') : srv.plan_type.replace('چند کاربره', 'یک کاربره');
+               await db.prepare("UPDATE services SET plan_type = ? WHERE id = ?").bind(newPlanType, srvId).run();
+               await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: `✅ سرویس با موفقیت به ${isSingle ? 'چندکاربره' : 'تک‌کاربره'} تغییر یافت.`, show_alert: true });
+               await refreshAdminServiceMessage(db, srvId, chat_id, msg_id);
+            } catch(e) {
+               await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ خطا در ارتباط با دامنه", show_alert: true });
+            }
+          }
+          return new Response('OK');
+        }
+
+        // تمدید (ذخیره آیدی پیام اصلی برای رفرش شدن)
         if (data.startsWith('admrenew_')) {
           if (user_id !== ADMIN_ID) return new Response('OK');
           const srvId = data.split('_')[1];
-          await setState(db, ADMIN_ID, { step: 'WAIT_ADMIN_ADD_DAYS', service_id: srvId });
+          await setState(db, ADMIN_ID, { step: 'WAIT_ADMIN_ADD_DAYS', service_id: srvId, original_msg_id: msg_id });
           await sendMessage(ADMIN_ID, `⏳ لطفاً تعداد روزهایی که می‌خواهید به این سرویس افزوده شود را تایپ کرده و بفرستید (مثلاً: 5 یا 30):`, pendingMenu());
           return new Response('OK');
         }
@@ -935,7 +983,6 @@ export default {
           let planPrice = PLAN_PRICES[state.days] || 0;
           let multiUserMessage = "";
           
-          // اعمال افزایش قیمت برای سرویس‌های چند کاربره
           if (userType !== '1') {
             planPrice += 20000;
             multiUserMessage = "\n\n💡 <i>توجه: به دلیل انتخاب سرویس چند کاربره، مبلغ ۲۰,۰۰۰ تومان به قیمت پایه افزوده شده است.</i>";
@@ -947,9 +994,6 @@ export default {
           await callTelegram('deleteMessage', { chat_id, message_id: msg_id });
           await sendMessage(chat_id, factor, backAndSupportKeyboard());
         }
-
-
-          
 
         else if (data.startsWith('admrej_')) {
           if (user_id !== ADMIN_ID) return new Response('OK');
@@ -1020,12 +1064,10 @@ export default {
                   const uRow = await db.prepare("SELECT first_name, username FROM users WHERE user_id = ?").bind(targetUser).first();
                   const userLink = getUserLink(targetUser, uRow ? uRow.first_name : "کاربر", uRow ? uRow.username : "");
 
-                  // ارسال پیام به کاربر
                   const userCaption = `✅ <b>سرویس اختصاصی شما با موفقیت شارژ/فعال شد!</b>\n\n👤 <b>کاربر:</b> ${userLink}\n🆔 <b>آیدی:</b> <code>${targetUser}</code>\n📦 <b>بسته خریداری شده:</b> ${planName}\n📅 <b>تاریخ ثبت:</b> ${shamsiNow}\n\n🔗 <b>لینک اتصال سابسکریپشن:</b>\n<code>${cfRes.subLink}</code>\n\n💡 <i>از دکمه‌های زیر برای افزودن سریع به برنامه استفاده کنید یا بارکد را اسکن نمایید.</i>`;
                   await callTelegram('sendPhoto', { chat_id: targetUser, photo: getQRUrl(cfRes.subLink), caption: userCaption, parse_mode: 'HTML', reply_markup: getImportKeyboard(cfRes.subLink, botOrigin) });
                   await sendMessage(targetUser, "✅ عملیات با موفقیت انجام شد و به منوی اصلی بازگشتید.", mainMenu(targetUser));
                   
-                  // ارسال تاییدیه به ادمین
                   const adminCaption = `✅ <b>شارژ خودکار اکانت با موفقیت انجام شد!</b>\n\n👤 <b>کاربر:</b> ${userLink}\n🆔 <b>آیدی:</b> <code>${targetUser}</code>\n📦 <b>بسته:</b> ${planName}\n🔗 <b>لینک اتصال:</b>\n<code>${cfRes.subLink}</code>`;
                   await callTelegram('sendPhoto', { chat_id: ADMIN_ID, photo: getQRUrl(cfRes.subLink), caption: adminCaption, parse_mode: 'HTML' });
                   
@@ -1035,7 +1077,6 @@ export default {
               return new Response('OK');
           }
 
-          // کاربر جدید بدون ورکر قبلی
           await callTelegram('editMessageReplyMarkup', { chat_id, message_id: msg_id, reply_markup: { inline_keyboard: [] } });
           
           if (call.message.photo) {
