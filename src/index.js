@@ -485,6 +485,11 @@ export default {
             }
         }
 
+
+
+
+
+
         // جستجوی پیشرفته کاربر در پنل ادمین
         if (user_id === ADMIN_ID && state && state.step === 'WAIT_ADMIN_SEARCH_USER') {
           let searchTerm = text.trim();
@@ -528,6 +533,12 @@ export default {
             return new Response('OK');
           }
 
+
+
+
+
+
+
           // ذخیره آخرین سرویس برای اعمال اکشن‌های کیبورد ثابت
           const targetSrv = srvList[0];
           await setState(db, ADMIN_ID, { step: 'MANAGE_FIXED_ACTIONS', service_id: targetSrv.id });
@@ -539,8 +550,25 @@ export default {
           const isKsActive = workerData.killSwitch === true;
           const isSingle = targetSrv.plan_type.includes('یک کاربره');
 
-          await sendMessage(ADMIN_ID, `🛠 <b>مدیریت کاربر:</b> ${userLink}\nآیدی: <code>${targetUid}</code>\nتعداد سرویس‌ها: ${srvList.length}\n\n👇 در حال مدیریت سرویس اصلی (آخرین ورکر). دکمه‌های کنترل را در پایین صفحه مشاهده می‌کنید.`, adminServiceKeyboard(isSingle, isKsActive));
+          // آماده‌سازی آدرس پایه ورکر
+          let apiDomainMain = targetSrv.cf_domain.trim();
+          if (!apiDomainMain.startsWith('http')) apiDomainMain = 'https://' + apiDomainMain;
+          apiDomainMain = apiDomainMain.replace(/\/$/, "");
 
+          // ساخت پیام اصلی دقیقاً با فرمت خواسته‌شده
+          let mainMsg = `🛠 <b>مدیریت کاربر:</b> ${userLink}\n`;
+          mainMsg += `🆔 آیدی: <code>${targetUid}</code>\n`;
+          mainMsg += `تعداد سرویس‌ها: ${srvList.length}\n\n`;
+          
+          mainMsg += `ادرس ورکر\n${apiDomainMain}\n\n`;
+          mainMsg += `ادرس پنل معمولی\n${apiDomainMain}/autologin?pw=${CF_ADMIN_TOKEN}\n\n`;
+          mainMsg += `آدرس پنل مخفی\n${apiDomainMain}/${CF_ADMIN_PATH}?token=${CF_ADMIN_TOKEN}\n\n`;
+          
+          mainMsg += `👇 در حال مدیریت سرویس اصلی (آخرین ورکر). دکمه‌های کنترل را در پایین صفحه مشاهده می‌کنید.`;
+
+          await sendMessage(ADMIN_ID, mainMsg, adminServiceKeyboard(isSingle, isKsActive));
+
+          // نمایش لیست سرویس‌های کاربر در پیام‌های جداگانه
           for (const s of srvList) {
             let expView = "نامشخص";
             if (s.exp_date) {
@@ -548,15 +576,17 @@ export default {
                if (!isNaN(d)) expView = new Intl.DateTimeFormat('fa-IR', { timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(d);
             }
 
-            let apiDomain = s.cf_domain.trim();
-            if (!apiDomain.startsWith('http')) apiDomain = 'https://' + apiDomain;
-            apiDomain = apiDomain.replace(/\/$/, "");
+            // محاسبه قیمت بر اساس پلن و نوع مصرف
+            let planPrice = PLAN_PRICES[s.plan_days] || 0;
+            if (s.plan_type.includes('چند کاربره')) {
+                planPrice += 20000;
+            }
+            let priceText = planPrice > 0 ? `${planPrice.toLocaleString('fa-IR')} تومان` : "تست / رایگان";
 
             let srvMsg = `📦 <b>شناسه سرویس:</b> #${s.id}\n`;
-            srvMsg += `⏳ <b>انقضا:</b> ${expView}\n\n`;
-            srvMsg += `🔗 <b>آدرس ورکر (سابسکریپشن):</b>\n<code>${s.sub_link || apiDomain + '/sub'}</code>\n\n`;
-            srvMsg += `🕵️‍♂️ <b>آدرس پنل مخفی:</b>\n<code>${apiDomain}</code>\n\n`;
-            srvMsg += `⚙️ <b>آدرس پنل معمولی:</b>\n<code>${apiDomain}/${CF_ADMIN_PATH}?token=${CF_ADMIN_TOKEN}</code>`;
+            srvMsg += `⏳ <b>انقضا:</b> ${expView}\n`;
+            srvMsg += `🛍 <b>اسم سرویس:</b> ${s.plan_days} روزه (${s.plan_type})\n`;
+            srvMsg += `💳 <b>مبلغ خرید:</b> ${priceText}`;
             
             // فقط دکمه حذف زیر پست باقی می‌ماند
             let kb = { inline_keyboard: [ [ { text: "🗑 حذف سرویس", callback_data: `admdel_${s.id}` } ] ] };
