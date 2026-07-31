@@ -236,7 +236,7 @@ function mainMenu(user_id) {
   const keyboard = [
     [{ text: "🎁 دریافت اکانت رایگان (تست)" }, { text: "🛒 خرید سرویس" }],
     [{ text: "📚 آموزش‌ها" }, { text: "📦 سرویس‌های من" }],
-    [{ text: "📞 ارتباط با پشتیبانی" }]
+    [{ text: "👤 وضعیت من" }, { text: "📞 ارتباط با پشتیبانی" }]
   ];
   if (user_id === ADMIN_ID) keyboard.push([{ text: "⚙️ ورود به پنل مدیریت حرفه‌ای" }]);
   return { keyboard, resize_keyboard: true };
@@ -247,6 +247,17 @@ function adminPanelMenu() {
     keyboard: [
       [{ text: "👥 لیست کامل کاربران و خریدها" }],
       [{ text: "🛠 مدیریت سرویس‌های کاربر" }, { text: "📖 راهنمای پنل مدیریت" }],
+      [{ text: "🏠 بازگشت به منوی اصلی" }]
+    ], 
+    resize_keyboard: true 
+  };
+}
+
+function adminServiceKeyboard(isSingle, isBlocked) {
+  return { 
+    keyboard: [
+      [{ text: "⏳ صفر کردن زمان" }, { text: "➕ تمدید / شارژ" }],
+      [{ text: isSingle ? "👥 تبدیل به چندکاربره" : "👤 تبدیل به تک‌کاربره" }, { text: isBlocked ? "✅ وصل فوری" : "🛑 قطع فوری" }],
       [{ text: "🏠 بازگشت به منوی اصلی" }]
     ], 
     resize_keyboard: true 
@@ -392,10 +403,86 @@ export default {
           return new Response('OK');
         }
 
+        // دکمه مدیریت کاربر
         if (text === "🛠 مدیریت سرویس‌های کاربر" && user_id === ADMIN_ID) {
           await setState(db, ADMIN_ID, { step: 'WAIT_ADMIN_SEARCH_USER' });
-          await sendMessage(chat_id, "🔍 لطفاً **آیدی عددی**، **نام/نام خانوادگی**، **یوزرنیم** یا **آدرس ورکر** کاربر را جهت جستجو ارسال کنید:", pendingMenu());
+          await sendMessage(chat_id, "🔍 لطفاً <b>آیدی عددی</b>، <b>نام/نام خانوادگی</b>، <b>یوزرنیم</b> یا <b>آدرس ورکر</b> کاربر را جهت جستجو ارسال کنید:", pendingMenu());
           return new Response('OK');
+        }
+
+        // اعمال کنترل‌های پنل مدیریت روی دکمه‌های ثابت
+        if (user_id === ADMIN_ID && state && state.step === 'MANAGE_FIXED_ACTIONS') {
+            const srvId = state.service_id;
+            const srv = await db.prepare("SELECT * FROM services WHERE id = ?").bind(srvId).first();
+            if (!srv) return new Response('OK');
+            
+            let apiDomain = srv.cf_domain.trim();
+            if (!apiDomain.startsWith('http')) apiDomain = 'https://' + apiDomain;
+            apiDomain = apiDomain.replace(/\/$/, "");
+            if (apiDomain.includes("?url=")) apiDomain = decodeURIComponent(apiDomain.split("?url=")[1]).replace(/\/$/, "");
+            const url = `${apiDomain}/${CF_ADMIN_PATH}?token=${CF_ADMIN_TOKEN}`;
+            
+            let updated = false;
+
+            if (text === "🛑 قطع فوری" || text === "✅ وصل فوری") {
+                await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: "toggleKillSwitch" }) });
+                updated = true;
+            } 
+            else if (text === "👥 تبدیل به چندکاربره" || text === "👤 تبدیل به تک‌کاربره") {
+                await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: "toggleUser" }) });
+                const isSingle = srv.plan_type.includes('یک کاربره');
+                const newPlanType = isSingle ? srv.plan_type.replace('یک کاربره', 'چند کاربره') : srv.plan_type.replace('چند کاربره', 'یک کاربره');
+                await db.prepare("UPDATE services SET plan_type = ? WHERE id = ?").bind(newPlanType, srvId).run();
+                updated = true;
+            }
+            else if (text === "⏳ صفر کردن زمان") {
+                const now = new Date();
+                now.setMinutes(now.getMinutes() - 5);
+                const dateStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tehran' }).format(now); 
+                const timeStr = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' }).format(now).substring(0, 5);
+                await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: "updateExp", date: dateStr, time: timeStr }) });
+                await db.prepare("UPDATE services SET exp_date = ?, status = 'INACTIVE' WHERE id = ?").bind(now.toISOString(), srvId).run();
+                updated = true;
+            }
+            else if (text === "➕ تمدید / شارژ") {
+                await setState(db, ADMIN_ID, { step: 'WAIT_ADMIN_ADD_DAYS', service_id: srvId });
+                await sendMessage(ADMIN_ID, `⏳ لطفاً تعداد روزهایی که می‌خواهید به این سرویس افزوده شود را تایپ کنید:`, pendingMenu());
+                return new Response('OK');
+            }
+
+            // ارسال پیام وضعیت فعلی با جزئیات کامل و کیبورد جدید
+            if (updated) {
+                const updatedSrv = await db.prepare("SELECT * FROM services WHERE id = ?").bind(srvId).first();
+                const workerData = await getWorkerStatus(updatedSrv.cf_domain);
+                const isKsActive = workerData.killSwitch === true;
+                const isSingleType = updatedSrv.plan_type.includes('یک کاربره');
+                
+                let remaining = "منقضی شده";
+                let expView = "نامشخص";
+                if (updatedSrv.exp_date) {
+                    const d = new Date(updatedSrv.exp_date);
+                    const now = new Date();
+                    if (!isNaN(d)) {
+                        expView = new Intl.DateTimeFormat('fa-IR', { timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(d);
+                        const diffMs = d - now;
+                        if (diffMs > 0) {
+                            const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+                            const hours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                            const mins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+                            remaining = `${days} روز و ${hours} ساعت و ${mins} دقیقه`;
+                        }
+                    }
+                }
+
+                let statusMsg = `📝 <b>وضعیت فعلی سرویس (${updatedSrv.cf_domain})</b>\n\n`;
+                statusMsg += `⏳ <b>باقی‌مانده:</b> ${remaining}\n`;
+                statusMsg += `📅 <b>تاریخ و ساعت انقضا:</b> ${expView}\n`;
+                statusMsg += `👥 <b>حالت:</b> ${isSingleType ? 'تک‌کاربره' : 'چندکاربره'}\n`;
+                statusMsg += `🔌 <b>قطع فوری (Kill Switch):</b> ${isKsActive ? '🛑 مسدود' : '✅ آزاد'}\n`;
+                
+                await sendMessage(ADMIN_ID, statusMsg, adminServiceKeyboard(isSingleType, isKsActive));
+                return new Response('OK');
+            }
         }
 
         // جستجوی پیشرفته کاربر در پنل ادمین
@@ -441,10 +528,18 @@ export default {
             return new Response('OK');
           }
 
+          // ذخیره آخرین سرویس برای اعمال اکشن‌های کیبورد ثابت
+          const targetSrv = srvList[0];
+          await setState(db, ADMIN_ID, { step: 'MANAGE_FIXED_ACTIONS', service_id: targetSrv.id });
+
           const uRow = foundUsers[0];
           const userLink = getUserLink(targetUid, uRow.first_name, uRow.username);
+          
+          const workerData = await getWorkerStatus(targetSrv.cf_domain);
+          const isKsActive = workerData.killSwitch === true;
+          const isSingle = targetSrv.plan_type.includes('یک کاربره');
 
-          await sendMessage(ADMIN_ID, `🛠 <b>مدیریت سرویس‌های کاربر:</b> ${userLink}\n🆔 آیدی: <code>${targetUid}</code>\nتعداد سرویس‌ها: ${srvList.length}`);
+          await sendMessage(ADMIN_ID, `🛠 <b>مدیریت کاربر:</b> ${userLink}\nآیدی: <code>${targetUid}</code>\nتعداد سرویس‌ها: ${srvList.length}\n\n👇 در حال مدیریت سرویس اصلی (آخرین ورکر). دکمه‌های کنترل را در پایین صفحه مشاهده می‌کنید.`, adminServiceKeyboard(isSingle, isKsActive));
 
           for (const s of srvList) {
             let expView = "نامشخص";
@@ -453,34 +548,12 @@ export default {
                if (!isNaN(d)) expView = new Intl.DateTimeFormat('fa-IR', { timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(d);
             }
 
-            let srvMsg = `📦 <b>شناسه سرویس:</b> #${s.id}\n🛍 <b>پلن:</b> ${s.plan_days} روزه نامحدود (${s.plan_type})\n🌐 <b>ورکر:</b> <code>${s.cf_domain}</code>\n⏳ <b>انقضا:</b> ${expView}\nوضعیت: ${s.status === 'ACTIVE' ? '✅ فعال' : '❌ غیرفعال'}`;
+            let srvMsg = `📦 <b>شناسه سرویس:</b> #${s.id}\n🌐 <b>ورکر:</b> <code>${s.cf_domain}</code>\n⏳ <b>انقضا:</b> ${expView}`;
             
-            const workerData = await getWorkerStatus(s.cf_domain);
-            const isKsActive = workerData.killSwitch === true;
-            let ksText = isKsActive ? "✅ وصل فوری" : "🛑 قطع فوری";
-            let singleMultiText = s.plan_type.includes('یک کاربره') ? "👥 تبدیل به چندکاربره" : "👤 تبدیل به تک‌کاربره";
-
-            let kb = {
-              inline_keyboard: [
-                [
-                  { text: "⏳ صفر کردن زمان", callback_data: `admexpire_${s.id}` },
-                  { text: "➕ تمدید / شارژ", callback_data: `admrenew_${s.id}` }
-                ],
-                [
-                  { text: singleMultiText, callback_data: `admmulti_${s.id}` },
-                  { text: ksText, callback_data: `admks_${s.id}` }
-                ],
-                [
-                  { text: "🗑 حذف سرویس", callback_data: `admdel_${s.id}` }
-                ],
-                [
-                  { text: "🔙 بازگشت", callback_data: `admback` }
-                ]
-              ]
-            };
+            // فقط دکمه حذف زیر پست باقی می‌ماند
+            let kb = { inline_keyboard: [ [ { text: "🗑 حذف سرویس", callback_data: `admdel_${s.id}` } ] ] };
             await sendMessage(ADMIN_ID, srvMsg, kb);
           }
-          await clearState(db, ADMIN_ID);
           return new Response('OK');
         }
 
@@ -502,17 +575,15 @@ export default {
           const cfRes = await updateCloudflareExp(srv.cf_domain, daysToAdd, 0, srv.plan_type.includes('یک کاربره'), srv.user_id, db);
           if (cfRes.success) {
             await db.prepare("UPDATE services SET exp_date = ?, status = 'ACTIVE' WHERE id = ?").bind(cfRes.newExpDate, srv.id).run();
-            await sendMessage(ADMIN_ID, `✅ سرویس شناسه #${srv.id} با موفقیت ${daysToAdd} روز شارژ شد.`);
+            await sendMessage(ADMIN_ID, `✅ سرویس شناسه #${srv.id} با موفقیت ${daysToAdd} روز شارژ شد. لطفا برای بازگشت به منوی سرویس‌ها دکمه بازگشت را بزنید.`);
             await sendMessage(srv.user_id, `🎉 <b>سرویس شما تمدید شد!</b>\n\n➕ مقدار <b>${daysToAdd} روز</b> به اعتبار سرویس شما افزوده شد.\n🔗 <b>لینک اتصال:</b>\n<code>${srv.sub_link}</code>`);
             
-            // رفرش درجا پیام اصلی مدیریت این سرویس
-            if (state.original_msg_id) {
-               await refreshAdminServiceMessage(db, srv.id, ADMIN_ID, state.original_msg_id);
-            }
+            // بازگشت به وضعیت کنترل‌های ثابت
+            await setState(db, ADMIN_ID, { step: 'MANAGE_FIXED_ACTIONS', service_id: srv.id });
           } else {
             await sendMessage(ADMIN_ID, `❌ خطا در آپدیت ورکر: ${cfRes.error}`, adminPanelMenu());
+            await clearState(db, ADMIN_ID);
           }
-          await clearState(db, ADMIN_ID);
           return new Response('OK');
         }
 
@@ -589,6 +660,53 @@ export default {
 
             await sendMessage(chat_id, msgText, inline_keyboard.length > 0 ? { inline_keyboard } : null);
             return new Response('OK');
+        }
+
+        if (text === "👤 وضعیت من") {
+          const uRow = await db.prepare("SELECT * FROM users WHERE user_id = ?").bind(user_id).first();
+          const { results: srvList } = await db.prepare("SELECT * FROM services WHERE user_id = ? ORDER BY id DESC").all();
+          
+          let msg = `👤 <b>وضعیت من</b>\n\n`;
+          msg += `📝 <b>نام ثبت شده:</b> ${uRow && uRow.first_name ? uRow.first_name : first_name}\n`;
+          msg += `🆔 <b>آیدی عددی:</b> <code>${user_id}</code>\n`;
+          msg += `🌐 <b>یوزرنیم:</b> ${uRow && uRow.username ? '@' + uRow.username : (username ? '@' + username : 'ندارد')}\n\n`;
+          
+          if (!srvList || srvList.length === 0) {
+              msg += `❌ شما در حال حاضر هیچ سرویسی ندارید.`;
+              await sendMessage(chat_id, msg);
+              return new Response('OK');
+          }
+          
+          msg += `📦 <b>اطلاعات سرویس‌های شما:</b>\n`;
+          for (const s of srvList) {
+              const workerData = await getWorkerStatus(s.cf_domain);
+              const isBlocked = workerData.killSwitch === true;
+              const isSingle = s.plan_type.includes('یک کاربره');
+              
+              let expView = "نامشخص";
+              let remaining = "پایان یافته / نامشخص";
+              if (s.exp_date) {
+                  const d = new Date(s.exp_date);
+                  const now = new Date();
+                  if (!isNaN(d)) {
+                      expView = new Intl.DateTimeFormat('fa-IR', { timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(d);
+                      const diffMs = d - now;
+                      if (diffMs > 0) {
+                          const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+                          const hours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                          remaining = `${days} روز و ${hours} ساعت`;
+                      }
+                  }
+              }
+              
+              msg += `\n🔹 <b>نام ورکر:</b> <code>${s.cf_domain}</code>\n`;
+              msg += `🛒 <b>نوع سرویس:</b> ${isSingle ? 'تک‌کاربره' : 'چندکاربره'}\n`;
+              msg += `⏳ <b>زمان باقی‌مانده:</b> ${remaining}\n`;
+              msg += `📅 <b>تاریخ انقضا:</b> ${expView}\n`;
+              msg += `🛡 <b>وضعیت حساب:</b> ${isBlocked ? '🛑 مسدود توسط ادمین' : '✅ فعال و متصل'}\n`;
+          }
+          await sendMessage(chat_id, msg);
+          return new Response('OK');
         }
 
         if (text === "👥 لیست کامل کاربران و خریدها" && user_id === ADMIN_ID) {
@@ -868,7 +986,7 @@ export default {
           return new Response('OK');
         }
 
-        // صفر کردن زمان (قطع کامل سرویس به دلیل انقضا)
+        // صفر کردن زمان برای دکمه‌های اینلاین قدیمی
         if (data.startsWith('admexpire_')) {
           if (user_id !== ADMIN_ID) return new Response('OK');
           const srvId = data.split('_')[1];
@@ -897,7 +1015,7 @@ export default {
           return new Response('OK');
         }
 
-        // قطع و وصل فوری ورکر (Kill Switch) بدون ارتباط به تاریخ انقضا
+        // قطع و وصل فوری برای دکمه‌های اینلاین قدیمی
         if (data.startsWith('admks_')) {
           if (user_id !== ADMIN_ID) return new Response('OK');
           const srvId = data.split('_')[1];
@@ -924,7 +1042,7 @@ export default {
           return new Response('OK');
         }
 
-        // تغییر تک کاربره و چند کاربره
+        // تغییر کاربری دکمه اینلاین قدیمی
         if (data.startsWith('admmulti_')) {
           if (user_id !== ADMIN_ID) return new Response('OK');
           const srvId = data.split('_')[1];
@@ -950,7 +1068,7 @@ export default {
           return new Response('OK');
         }
 
-        // تمدید (ذخیره آیدی پیام اصلی برای رفرش شدن)
+        // تمدید دکمه اینلاین قدیمی
         if (data.startsWith('admrenew_')) {
           if (user_id !== ADMIN_ID) return new Response('OK');
           const srvId = data.split('_')[1];
