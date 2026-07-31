@@ -314,9 +314,22 @@ export default {
           return new Response('OK');
         }
 
+
+
+
+
+        
         // جستجوی پیشرفته کاربر در پنل ادمین
         if (user_id === ADMIN_ID && state && state.step === 'WAIT_ADMIN_SEARCH_USER') {
-          const searchTerm = text.trim();
+          let searchTerm = text.trim();
+          
+          // حذف http:// و / انتهایی برای جستجوی دقیق‌تر دامنه در دیتابیس
+          searchTerm = searchTerm.replace(/^https?:\/\//i, '').replace(/\/$/, '');
+          
+          // جلوگیری از ارور SQLITE_ERROR مربوط به محدودیت طول الگو در Cloudflare D1
+          if (searchTerm.length > 40) {
+             searchTerm = searchTerm.substring(0, 40);
+          }
           
           // جستجو در جداول کاربران و سرویس‌ها به صورت همزمان
           const { results: foundUsers } = await db.prepare(`
@@ -384,6 +397,23 @@ export default {
           await clearState(db, ADMIN_ID);
           return new Response('OK');
         }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        
 
         // تمدید سرویس توسط ادمین
         if (user_id === ADMIN_ID && state && state.step === 'WAIT_ADMIN_ADD_DAYS') {
@@ -902,13 +932,24 @@ export default {
           state.timer_start = Date.now();
           await setState(db, user_id, state);
           
-          const planPrice = PLAN_PRICES[state.days] || 0;
+          let planPrice = PLAN_PRICES[state.days] || 0;
+          let multiUserMessage = "";
+          
+          // اعمال افزایش قیمت برای سرویس‌های چند کاربره
+          if (userType !== '1') {
+            planPrice += 20000;
+            multiUserMessage = "\n\n💡 <i>توجه: به دلیل انتخاب سرویس چند کاربره، مبلغ ۲۰,۰۰۰ تومان به قیمت پایه افزوده شده است.</i>";
+          }
+          
           const formattedPrice = planPrice.toLocaleString('fa-IR');
           
-          const factor = `💳 <b>فاکتور سرویس ${state.days} روزه کاملاً نامحدود (${state.type})</b>\n💵 مبلغ سرویس: <b>${formattedPrice} تومان</b>\n\nلطفاً مبلغ فوق را به شماره کارت زیر واریز کرده و <b>عکس رسید تراکنش</b> را همینجا ارسال کنید:\n\n💳 <code>${CARD_NUMBER}</code>\n\n⏱ <i>شما ۱۰ دقیقه برای ارسال رسید فرصت دارید. (تا زمان تایید ادمین، امکان ارسال مجدد و ویرایش عکس فیش وجود دارد)</i>`;
+          const factor = `💳 <b>فاکتور سرویس ${state.days} روزه کاملاً نامحدود (${state.type})</b>\n💵 مبلغ سرویس: <b>${formattedPrice} تومان</b>${multiUserMessage}\n\nلطفاً مبلغ فوق را به شماره کارت زیر واریز کرده و <b>عکس رسید تراکنش</b> را همینجا ارسال کنید:\n\n💳 <code>${CARD_NUMBER}</code>\n\n⏱ <i>شما ۱۰ دقیقه برای ارسال رسید فرصت دارید. (تا زمان تایید ادمین، امکان ارسال مجدد و ویرایش عکس فیش وجود دارد)</i>`;
           await callTelegram('deleteMessage', { chat_id, message_id: msg_id });
           await sendMessage(chat_id, factor, backAndSupportKeyboard());
         }
+
+
+          
 
         else if (data.startsWith('admrej_')) {
           if (user_id !== ADMIN_ID) return new Response('OK');
