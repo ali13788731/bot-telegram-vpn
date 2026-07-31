@@ -70,6 +70,24 @@ async function sendMessage(chat_id, text, reply_markup = null, parse_mode = "HTM
   return await callTelegram('sendMessage', body);
 }
 
+// ================= استخراج وضعیت لحظه‌ای ورکر =================
+async function getWorkerStatus(domain) {
+  let apiDomain = domain.trim();
+  if (!apiDomain.startsWith('http')) apiDomain = 'https://' + apiDomain;
+  apiDomain = apiDomain.replace(/\/$/, "");
+  if (apiDomain.includes("?url=")) apiDomain = decodeURIComponent(apiDomain.split("?url=")[1]).replace(/\/$/, "");
+  
+  const url = `${apiDomain}/${CF_ADMIN_PATH}?token=${CF_ADMIN_TOKEN}`;
+  try {
+    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: "getData" }) });
+    if (res.ok) {
+      const json = await res.json();
+      return json.data || {};
+    }
+  } catch(e) {}
+  return {};
+}
+
 // تابع کمکی برای آپدیت درجایِ پیام وضعیت سرویس (بدون خروج از منو)
 async function refreshAdminServiceMessage(db, srvId, chat_id, msg_id) {
   const s = await db.prepare("SELECT * FROM services WHERE id = ?").bind(srvId).first();
@@ -83,21 +101,27 @@ async function refreshAdminServiceMessage(db, srvId, chat_id, msg_id) {
 
   let srvMsg = `📦 <b>شناسه سرویس:</b> #${s.id}\n🛍 <b>پلن:</b> ${s.plan_days} روزه نامحدود (${s.plan_type})\n🌐 <b>ورکر:</b> <code>${s.cf_domain}</code>\n⏳ <b>انقضا:</b> ${expView}\nوضعیت: ${s.status === 'ACTIVE' ? '✅ فعال' : '❌ غیرفعال'}`;
   
-  let ksText = s.status === 'ACTIVE' ? "🛑 قطع فوری (Kill Switch)" : "✅ وصل فوری";
-  let singleMultiText = s.plan_type.includes('یک کاربره') ? "👥 ارتقا به چندکاربره" : "👤 تبدیل به تک‌کاربره";
+  const workerData = await getWorkerStatus(s.cf_domain);
+  const isKsActive = workerData.killSwitch === true;
+  
+  let ksText = isKsActive ? "✅ وصل فوری" : "🛑 قطع فوری";
+  let singleMultiText = s.plan_type.includes('یک کاربره') ? "👥 تبدیل به چندکاربره" : "👤 تبدیل به تک‌کاربره";
   
   let kb = {
     inline_keyboard: [
       [
-        { text: "➕ تمدید / شارژ", callback_data: `admrenew_${s.id}` },
-        { text: "⏳ صفر کردن زمان", callback_data: `admexpire_${s.id}` }
+        { text: "⏳ صفر کردن زمان", callback_data: `admexpire_${s.id}` },
+        { text: "➕ تمدید / شارژ", callback_data: `admrenew_${s.id}` }
       ],
       [
-        { text: ksText, callback_data: `admks_${s.id}` },
-        { text: singleMultiText, callback_data: `admmulti_${s.id}` }
+        { text: singleMultiText, callback_data: `admmulti_${s.id}` },
+        { text: ksText, callback_data: `admks_${s.id}` }
       ],
       [
         { text: "🗑 حذف سرویس", callback_data: `admdel_${s.id}` }
+      ],
+      [
+        { text: "🔙 بازگشت", callback_data: `admback` }
       ]
     ]
   };
@@ -430,21 +454,27 @@ export default {
             }
 
             let srvMsg = `📦 <b>شناسه سرویس:</b> #${s.id}\n🛍 <b>پلن:</b> ${s.plan_days} روزه نامحدود (${s.plan_type})\n🌐 <b>ورکر:</b> <code>${s.cf_domain}</code>\n⏳ <b>انقضا:</b> ${expView}\nوضعیت: ${s.status === 'ACTIVE' ? '✅ فعال' : '❌ غیرفعال'}`;
-            let ksText = s.status === 'ACTIVE' ? "🛑 قطع فوری (Kill Switch)" : "✅ وصل فوری";
-            let singleMultiText = s.plan_type.includes('یک کاربره') ? "👥 ارتقا به چندکاربره" : "👤 تبدیل به تک‌کاربره";
+            
+            const workerData = await getWorkerStatus(s.cf_domain);
+            const isKsActive = workerData.killSwitch === true;
+            let ksText = isKsActive ? "✅ وصل فوری" : "🛑 قطع فوری";
+            let singleMultiText = s.plan_type.includes('یک کاربره') ? "👥 تبدیل به چندکاربره" : "👤 تبدیل به تک‌کاربره";
 
             let kb = {
               inline_keyboard: [
                 [
-                  { text: "➕ تمدید / شارژ", callback_data: `admrenew_${s.id}` },
-                  { text: "⏳ صفر کردن زمان", callback_data: `admexpire_${s.id}` }
+                  { text: "⏳ صفر کردن زمان", callback_data: `admexpire_${s.id}` },
+                  { text: "➕ تمدید / شارژ", callback_data: `admrenew_${s.id}` }
                 ],
                 [
-                  { text: ksText, callback_data: `admks_${s.id}` },
-                  { text: singleMultiText, callback_data: `admmulti_${s.id}` }
+                  { text: singleMultiText, callback_data: `admmulti_${s.id}` },
+                  { text: ksText, callback_data: `admks_${s.id}` }
                 ],
                 [
                   { text: "🗑 حذف سرویس", callback_data: `admdel_${s.id}` }
+                ],
+                [
+                  { text: "🔙 بازگشت", callback_data: `admback` }
                 ]
               ]
             };
@@ -472,7 +502,7 @@ export default {
           const cfRes = await updateCloudflareExp(srv.cf_domain, daysToAdd, 0, srv.plan_type.includes('یک کاربره'), srv.user_id, db);
           if (cfRes.success) {
             await db.prepare("UPDATE services SET exp_date = ?, status = 'ACTIVE' WHERE id = ?").bind(cfRes.newExpDate, srv.id).run();
-            await sendMessage(ADMIN_ID, `✅ سرویس شناسه #${srv.id} با موفقیت ${daysToAdd} روز شارژ شد.`, adminPanelMenu());
+            await sendMessage(ADMIN_ID, `✅ سرویس شناسه #${srv.id} با موفقیت ${daysToAdd} روز شارژ شد.`);
             await sendMessage(srv.user_id, `🎉 <b>سرویس شما تمدید شد!</b>\n\n➕ مقدار <b>${daysToAdd} روز</b> به اعتبار سرویس شما افزوده شد.\n🔗 <b>لینک اتصال:</b>\n<code>${srv.sub_link}</code>`);
             
             // رفرش درجا پیام اصلی مدیریت این سرویس
@@ -803,6 +833,12 @@ export default {
             return new Response('OK');
         }
 
+        if (data === 'admback') {
+            if (user_id !== ADMIN_ID) return new Response('OK');
+            await callTelegram('deleteMessage', { chat_id, message_id: msg_id });
+            return new Response('OK');
+        }
+
         if (data === 'confirm_send_msg') {
           if (state && state.message_text) {
             const uRow = await db.prepare("SELECT first_name, username FROM users WHERE user_id = ?").bind(user_id).first();
@@ -861,7 +897,7 @@ export default {
           return new Response('OK');
         }
 
-        // قطع و وصل فوری (Kill Switch)
+        // قطع و وصل فوری ورکر (Kill Switch) بدون ارتباط به تاریخ انقضا
         if (data.startsWith('admks_')) {
           if (user_id !== ADMIN_ID) return new Response('OK');
           const srvId = data.split('_')[1];
@@ -876,9 +912,7 @@ export default {
             try {
               const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: "toggleKillSwitch" }) });
               if (res.ok) {
-                const newStatus = srv.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
-                await db.prepare("UPDATE services SET status = ? WHERE id = ?").bind(newStatus, srvId).run();
-                await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: newStatus === 'ACTIVE' ? "✅ سرویس با موفقیت وصل شد." : "🛑 سرویس فوراً قطع شد.", show_alert: true });
+                await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "عملیات قطع/وصل سریع در ورکر انجام شد.", show_alert: true });
                 await refreshAdminServiceMessage(db, srvId, chat_id, msg_id);
               } else {
                  await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ خطا در ارتباط با ورکر.", show_alert: true });
@@ -925,12 +959,44 @@ export default {
           return new Response('OK');
         }
 
-        // حذف سرویس توسط ادمین
+        // حذف سرویس توسط ادمین و کسر زمان دقیق از روی ورکر
         if (data.startsWith('admdel_')) {
           if (user_id !== ADMIN_ID) return new Response('OK');
           const srvId = data.split('_')[1];
-          await db.prepare("DELETE FROM services WHERE id = ?").bind(srvId).run();
-          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `🗑 سرویس شناسه #${srvId} با موفقیت حذف گردید.`, parse_mode: "HTML" });
+          const srv = await db.prepare("SELECT * FROM services WHERE id = ?").bind(srvId).first();
+          
+          if (srv) {
+              if (srv.exp_date && srv.status === 'ACTIVE') {
+                  const expDate = new Date(srv.exp_date);
+                  const now = new Date();
+                  if (expDate > now) {
+                      const remainingMs = expDate.getTime() - now.getTime();
+                      const workerData = await getWorkerStatus(srv.cf_domain);
+                      
+                      if (workerData && workerData.exp && workerData.exp > now.getTime()) {
+                          let newWorkerExpMs = workerData.exp - remainingMs;
+                          if (newWorkerExpMs < now.getTime()) newWorkerExpMs = now.getTime() - 60000; 
+                          
+                          const newExpDate = new Date(newWorkerExpMs);
+                          const dateStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tehran' }).format(newExpDate); 
+                          const timeStr = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' }).format(newExpDate).substring(0, 5);
+                          
+                          let apiDomain = srv.cf_domain.trim();
+                          if (!apiDomain.startsWith('http')) apiDomain = 'https://' + apiDomain;
+                          apiDomain = apiDomain.replace(/\/$/, "");
+                          if (apiDomain.includes("?url=")) apiDomain = decodeURIComponent(apiDomain.split("?url=")[1]).replace(/\/$/, "");
+                          
+                          await fetch(`${apiDomain}/${CF_ADMIN_PATH}?token=${CF_ADMIN_TOKEN}`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ action: "updateExp", date: dateStr, time: timeStr })
+                          });
+                      }
+                  }
+              }
+              await db.prepare("DELETE FROM services WHERE id = ?").bind(srvId).run();
+              await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `🗑 سرویس شناسه #${srvId} با موفقیت حذف گردید و زمان باقی‌مانده آن از ورکر کسر شد.`, parse_mode: "HTML" });
+          }
           return new Response('OK');
         }
 
