@@ -599,7 +599,7 @@ export default {
             srvMsg += `🛍 <b>اسم سرویس:</b> ${s.plan_days} روزه (${s.plan_type})\n`;
             srvMsg += `💳 <b>مبلغ خرید:</b> ${priceText}`;
             
-            let kb = { inline_keyboard: [ [ { text: "🗑 حذف سرویس", callback_data: `admdel_${s.id}` } ] ] };
+            let kb = { inline_keyboard: [ [ { text: "✏️ ویرایش ورکر", callback_data: `admeditworker_${s.id}` }, { text: "🗑 حذف سرویس", callback_data: `admdel_${s.id}` } ] ] };
             await sendMessage(ADMIN_ID, srvMsg, kb);
           }
           return new Response('OK');
@@ -685,12 +685,10 @@ export default {
             }
 
             let msgText = "📦 <b>لیست تمامی سرویس‌های شما:</b>\n\n";
-            let inline_keyboard = [];
 
             userServices.forEach((s, idx) => {
               msgText += `🔹 <b>سرویس ${idx + 1}:</b>\n`;
               msgText += `🛍 <b>پکیج:</b> ${s.plan_days} روزه نامحدود (${s.plan_type})\n`;
-              msgText += `🌐 <b>ورکر:</b> <code>${s.cf_domain}</code>\n`;
               msgText += `📅 <b>تاریخ ثبت:</b> ${s.purchase_date_shamsi}\n`;
               
               let expView = "نامشخص";
@@ -700,13 +698,17 @@ export default {
               }
               msgText += `⏳ <b>تاریخ انقضا:</b> ${expView}\n`;
               msgText += `وضعیت: ${s.status === 'ACTIVE' ? '✅ فعال' : '❌ غیرفعال'}\n➖➖➖➖➖➖\n`;
-
-              if (s.sub_link) {
-                 inline_keyboard.push([{ text: `🔗 اتصال به سرویس ${idx + 1}`, callback_data: `getqr_${s.id}` }]);
-              }
             });
 
-            await sendMessage(chat_id, msgText, inline_keyboard.length > 0 ? { inline_keyboard } : null);
+            await sendMessage(chat_id, msgText);
+
+            // ارسال خودکار بارکد (QR) و لینک اتصال برای هر سرویس دارای لینک فعال
+            for (const s of userServices) {
+              if (s.sub_link) {
+                const caption = `📱 <b>بارکد (QR Code) و لینک اتصال سرویس</b>\n\n🔗 <b>لینک سابسکریپشن شما:</b>\n<code>${s.sub_link}</code>\n\n💡 جهت اتصال سریع، روی دکمه‌های زیر کلیک کنید یا بارکد را اسکن نمایید.`;
+                await callTelegram('sendPhoto', { chat_id, photo: getQRUrl(s.sub_link), caption: caption, parse_mode: 'HTML', reply_markup: getImportKeyboard(s.sub_link, botOrigin) });
+              }
+            }
             return new Response('OK');
         }
 
@@ -970,6 +972,49 @@ export default {
           return new Response('OK');
         }
 
+        // ================= ویرایش آدرس ورکر یک سرویس خاص توسط ادمین =================
+        if (user_id === ADMIN_ID && state && state.step === 'WAIT_EDIT_WORKER_DOMAIN') {
+          let domainInput = text.trim();
+          if (!domainInput.startsWith('http')) domainInput = 'https://' + domainInput;
+          domainInput = domainInput.replace(/\/$/, "");
+
+          const srv = await db.prepare("SELECT * FROM services WHERE id = ?").bind(state.service_id).first();
+          if (!srv) {
+            await sendMessage(ADMIN_ID, "❌ سرویس یافت نشد.", adminPanelMenu());
+            await clearState(db, ADMIN_ID);
+            return new Response('OK');
+          }
+
+          const duplicateCheck = await db.prepare("SELECT user_id FROM services WHERE cf_domain = ? AND id != ? LIMIT 1").bind(domainInput, state.service_id).first();
+          if (duplicateCheck) {
+              const errKb = { inline_keyboard: [[{ text: "❌ انصراف از این عملیات", callback_data: "cancel_admin" }]] };
+              await sendMessage(ADMIN_ID, `❌ <b>خطای امنیتی: ورکر تکراری!</b>\n\n⚠️ این ورکر (<code>${domainInput}</code>) قبلاً برای کاربر دیگری ثبت شده است.\n👤 آیدی صاحب فعلی: <a href="tg://user?id=${duplicateCheck.user_id}">${duplicateCheck.user_id}</a>\n\nلطفاً یک ورکر جدید وارد کنید یا عملیات را لغو کنید.`, errKb);
+              return new Response('OK');
+          }
+
+          const oldDomain = srv.cf_domain || "";
+          let newSubLink = srv.sub_link;
+          if (newSubLink && oldDomain) {
+             // اگر لینک سابسکریپشن شامل آدرس قدیمی ورکر باشد، آن را با آدرس جدید جایگزین می‌کنیم
+             const oldPure = oldDomain.replace(/^https?:\/\//i, '').replace(/\/$/, "");
+             const newPure = domainInput.replace(/^https?:\/\//i, '').replace(/\/$/, "");
+             if (oldPure) newSubLink = newSubLink.split(oldPure).join(newPure);
+          }
+
+          await db.prepare("UPDATE services SET cf_domain = ?, sub_link = ? WHERE id = ?").bind(domainInput, newSubLink, state.service_id).run();
+          await clearState(db, ADMIN_ID);
+
+          await sendMessage(ADMIN_ID, `✅ آدرس ورکر سرویس #${state.service_id} با موفقیت ویرایش شد.\n\n🌐 <b>آدرس جدید:</b>\n<code>${domainInput}</code>`, adminPanelMenu());
+
+          const editedUserMsg = `⚠️ <b>توجه: آدرس اتصال سرویس شما توسط پشتیبانی ویرایش شد.</b>\n\nاین تغییر معمولاً به این دلیل انجام می‌شود که آدرس قبلی به هر دلیلی (از جمله فیلترشدن) دچار مشکل دسترسی شده است.\n\n🔗 <b>لینک اتصال سابسکریپشن جدید شما:</b>\n<code>${newSubLink}</code>\n\n💡 لطفاً از این پس فقط از لینک جدید برای اتصال استفاده کنید.`;
+          if (newSubLink) {
+            await callTelegram('sendPhoto', { chat_id: srv.user_id, photo: getQRUrl(newSubLink), caption: editedUserMsg, parse_mode: 'HTML', reply_markup: getImportKeyboard(newSubLink, botOrigin) });
+          } else {
+            await sendMessage(srv.user_id, editedUserMsg);
+          }
+          return new Response('OK');
+        }
+
         // ================= ارسال پیام شخصی/دلخواه کاربر به ادمین =================
         if (text && !text.startsWith('/') && user_id !== ADMIN_ID && (!state || !state.step)) {
           await setState(db, user_id, { step: 'CONFIRM_PERSONAL_MSG', message_text: text });
@@ -1165,6 +1210,22 @@ export default {
           return new Response('OK');
         }
 
+        // ویرایش دستی آدرس ورکر یک سرویس توسط ادمین (مثلاً به دلیل فیلتر شدن آدرس قبلی)
+        else if (data.startsWith('admeditworker_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const srvId = data.split('_')[1];
+          const srv = await db.prepare("SELECT * FROM services WHERE id = ?").bind(srvId).first();
+          if (!srv) {
+            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ سرویس یافت نشد.", show_alert: true });
+            return new Response('OK');
+          }
+          await setState(db, ADMIN_ID, { step: 'WAIT_EDIT_WORKER_DOMAIN', service_id: srvId });
+          const editKb = { inline_keyboard: [[{ text: "❌ انصراف از این عملیات", callback_data: "cancel_admin" }]] };
+          await sendMessage(ADMIN_ID, `✏️ <b>ویرایش آدرس ورکر سرویس #${srvId}</b>\n\n🌐 آدرس فعلی:\n<code>${srv.cf_domain}</code>\n\nلطفاً <b>آدرس دامنه جدید ورکر</b> را تایپ و ارسال کنید:`, editKb);
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+          return new Response('OK');
+        }
+
         // انتخاب کاربر از لیست پیشنهادی جستجو
         else if (data.startsWith('admuser_')) {
           if (user_id !== ADMIN_ID) return new Response('OK');
@@ -1233,7 +1294,7 @@ export default {
             srvMsg += `🛍 <b>اسم سرویس:</b> ${s.plan_days} روزه (${s.plan_type})\n`;
             srvMsg += `💳 <b>مبلغ خرید:</b> ${priceText}`;
             
-            let kb = { inline_keyboard: [ [ { text: "🗑 حذف سرویس", callback_data: `admdel_${s.id}` } ] ] };
+            let kb = { inline_keyboard: [ [ { text: "✏️ ویرایش ورکر", callback_data: `admeditworker_${s.id}` }, { text: "🗑 حذف سرویس", callback_data: `admdel_${s.id}` } ] ] };
             await sendMessage(ADMIN_ID, srvMsg, kb);
           }
           return new Response('OK');
