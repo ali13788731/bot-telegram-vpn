@@ -727,7 +727,14 @@ export default {
               msgText += `🔹 <b>سرویس ${idx + 1}:</b>\n`;
               msgText += `🛍 <b>پکیج:</b> ${s.plan_days} روزه نامحدود (${s.plan_type})\n`;
               msgText += `📅 <b>تاریخ ثبت:</b> ${s.purchase_date_shamsi}\n`;
-              
+
+              let planPrice = PLAN_PRICES[s.plan_days] || 0;
+              if (s.plan_type.includes('چند کاربره')) {
+                  planPrice += 20000;
+              }
+              let priceText = planPrice > 0 ? `${planPrice.toLocaleString('fa-IR')} تومان` : "تست / رایگان";
+              msgText += `💳 <b>مبلغ خرید:</b> ${priceText}\n`;
+
               let expView = "نامشخص";
               if (s.exp_date) {
                  const d = new Date(s.exp_date);
@@ -1048,9 +1055,16 @@ export default {
           }
 
           await db.prepare("UPDATE services SET cf_domain = ?, sub_link = ? WHERE id = ?").bind(domainInput, newSubLink, state.service_id).run();
-          await clearState(db, ADMIN_ID);
 
-          await sendMessage(ADMIN_ID, `✅ آدرس ورکر سرویس #${state.service_id} با موفقیت ویرایش شد.\n\n🌐 <b>آدرس جدید:</b>\n<code>${domainInput}</code>`, adminPanelMenu());
+          const updatedSrvAfterEdit = await db.prepare("SELECT * FROM services WHERE id = ?").bind(state.service_id).first();
+          const workerDataAfterEdit = await getWorkerStatus(updatedSrvAfterEdit.cf_domain);
+          const isKsActiveAfterEdit = workerDataAfterEdit.killSwitch === true;
+          const isSingleTypeAfterEdit = updatedSrvAfterEdit.plan_type.includes('یک کاربره');
+
+          // به‌جای پاک کردن استیت و بازگشت به منوی اصلی، در همان صفحه مدیریت سرویس باقی می‌مانیم
+          await setState(db, ADMIN_ID, { step: 'MANAGE_FIXED_ACTIONS', service_id: state.service_id });
+
+          await sendMessage(ADMIN_ID, `✅ آدرس ورکر سرویس #${state.service_id} با موفقیت ویرایش شد.\n\n🌐 <b>آدرس جدید:</b>\n<code>${domainInput}</code>`, adminServiceKeyboard(isSingleTypeAfterEdit, isKsActiveAfterEdit));
 
           const editedUserMsg = `⚠️ <b>توجه: آدرس اتصال سرویس شما توسط پشتیبانی ویرایش شد.</b>\n\nاین تغییر معمولاً به این دلیل انجام می‌شود که آدرس قبلی به هر دلیلی (از جمله فیلترشدن) دچار مشکل دسترسی شده است.\n\n🔗 <b>لینک اتصال سابسکریپشن جدید شما:</b>\n<code>${newSubLink}</code>\n\n💡 لطفاً از این پس فقط از لینک جدید برای اتصال استفاده کنید.`;
           if (newSubLink) {
