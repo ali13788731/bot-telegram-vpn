@@ -993,10 +993,15 @@ export default {
           if (!domainInput.startsWith('http')) domainInput = 'https://' + domainInput;
           domainInput = domainInput.replace(/\/$/, "");
           
-          const duplicateCheck = await db.prepare("SELECT user_id FROM services WHERE cf_domain = ? AND user_id != ? LIMIT 1").bind(domainInput, state.target_user).first();
+          const duplicateCheck = await db.prepare(`
+            SELECT s.user_id, u.first_name, u.username
+            FROM services s LEFT JOIN users u ON u.user_id = s.user_id
+            WHERE s.cf_domain = ? AND s.user_id != ? LIMIT 1
+          `).bind(domainInput, state.target_user).first();
           if (duplicateCheck) {
               const errKb = { inline_keyboard: [[{ text: "❌ انصراف از این عملیات", callback_data: "cancel_admin" }]] };
-              await sendMessage(ADMIN_ID, `❌ <b>خطای امنیتی: ورکر تکراری!</b>\n\n⚠️ این ورکر (<code>${domainInput}</code>) قبلاً برای کاربر دیگری ثبت شده است.\n👤 آیدی صاحب فعلی: <a href="tg://user?id=${duplicateCheck.user_id}">${duplicateCheck.user_id}</a>\n\nلطفاً یک ورکر جدید وارد کنید یا عملیات را لغو کنید.`, errKb);
+              const ownerLink = getUserLink(duplicateCheck.user_id, duplicateCheck.first_name, duplicateCheck.username);
+              await sendMessage(ADMIN_ID, `❌ <b>خطای امنیتی: ورکر تکراری!</b>\n\n⚠️ این ورکر (<code>${domainInput}</code>) قبلاً برای کاربر دیگری ثبت شده است.\n👤 صاحب فعلی: ${ownerLink}\n🆔 آیدی: <code>${duplicateCheck.user_id}</code>\n\nلطفاً یک ورکر جدید وارد کنید یا عملیات را لغو کنید.`, errKb);
               return new Response('OK');
           }
 
@@ -1040,6 +1045,8 @@ export default {
             await callTelegram('sendPhoto', { chat_id: ADMIN_ID, photo: getQRUrl(cfRes.subLink), caption: adminCaption, parse_mode: 'HTML' });
             
             await clearState(db, ADMIN_ID);
+            // کیبورد موقتِ «لغو عملیات» رو به‌صورت خودکار با پنل عادی مدیریت جایگزین می‌کنیم (دیگه نیازی به کلیک دستی نیست)
+            await sendMessage(ADMIN_ID, "✅ به پنل مدیریت بازگشتید.", adminPanelMenu());
           } else {
             const errKb = { inline_keyboard: [[{ text: "❌ انصراف از این عملیات", callback_data: "cancel_admin" }]] };
             await sendMessage(ADMIN_ID, `❌ <b>خطا در ارتباط با ورکر!</b>\n💬 <b>دلیل خطا:</b> ${cfRes.error}\n\n💡 <i>لطفاً آدرس صحیح دامنه ورکر را مجدداً ارسال کنید یا عملیات را لغو کنید.</i>`, errKb);
@@ -1060,10 +1067,15 @@ export default {
             return new Response('OK');
           }
 
-          const duplicateCheck = await db.prepare("SELECT user_id FROM services WHERE cf_domain = ? AND id != ? LIMIT 1").bind(domainInput, state.service_id).first();
+          const duplicateCheck = await db.prepare(`
+            SELECT s.user_id, u.first_name, u.username
+            FROM services s LEFT JOIN users u ON u.user_id = s.user_id
+            WHERE s.cf_domain = ? AND s.id != ? LIMIT 1
+          `).bind(domainInput, state.service_id).first();
           if (duplicateCheck) {
               const errKb = { inline_keyboard: [[{ text: "❌ انصراف از این عملیات", callback_data: "cancel_admin" }]] };
-              await sendMessage(ADMIN_ID, `❌ <b>خطای امنیتی: ورکر تکراری!</b>\n\n⚠️ این ورکر (<code>${domainInput}</code>) قبلاً برای کاربر دیگری ثبت شده است.\n👤 آیدی صاحب فعلی: <a href="tg://user?id=${duplicateCheck.user_id}">${duplicateCheck.user_id}</a>\n\nلطفاً یک ورکر جدید وارد کنید یا عملیات را لغو کنید.`, errKb);
+              const ownerLink = getUserLink(duplicateCheck.user_id, duplicateCheck.first_name, duplicateCheck.username);
+              await sendMessage(ADMIN_ID, `❌ <b>خطای امنیتی: ورکر تکراری!</b>\n\n⚠️ این ورکر (<code>${domainInput}</code>) قبلاً برای کاربر دیگری ثبت شده است.\n👤 صاحب فعلی: ${ownerLink}\n🆔 آیدی: <code>${duplicateCheck.user_id}</code>\n\nلطفاً یک ورکر جدید وارد کنید یا عملیات را لغو کنید.`, errKb);
               return new Response('OK');
           }
 
