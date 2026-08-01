@@ -57,9 +57,9 @@ async function validateWorkerDomain(domain) {
   }
 }
 
-// ================= برچسب صحیح مدت پلن (پلن ۱ روزه، پلن نامحدود محسوب نمی‌شود) =================
+// ================= برچسب مدت پلن (همه پلن‌های خریدنی، از جمله ۱ روزه، نامحدود هستند) =================
 function planDaysLabel(days) {
-  return `${days} روزه${String(days) === '1' ? '' : ' نامحدود'}`;
+  return `${days} روزه نامحدود`;
 }
 
 // ================= توابع کاربردی =================
@@ -317,12 +317,22 @@ function tutorialsMenu() {
   };
 }
 
+// ================= مجموعه متن تمام دکمه‌های ثابت (کیبورد پایین صفحه) =================
+// برای تشخیص این‌که آیا متن ارسالی توسط ادمین «فشردن یک دکمه منو» است یا «ورودی واقعی» (مثل آدرس ورکر)
+const FIXED_MENU_BUTTON_TEXTS = new Set([
+  "🎁 دریافت اکانت رایگان (تست)", "🛒 خرید سرویس", "📚 آموزش‌ها", "📦 سرویس‌های من", "👤 وضعیت من", "📞 ارتباط با پشتیبانی", "⚙️ ورود به پنل مدیریت حرفه‌ای",
+  "👥 لیست کامل کاربران و خریدها", "🛠 مدیریت سرویس‌های کاربر", "📖 راهنمای پنل مدیریت", "🏠 بازگشت به منوی اصلی",
+  "⏳ صفر کردن زمان", "➕ تمدید / شارژ", "👥 تبدیل به چندکاربره", "👤 تبدیل به تک‌کاربره", "✅ وصل فوری", "🛑 قطع فوری", "✏️ ویرایش ورکر",
+  "🔙 مرحله قبل", "🔙 بازگشت به پنل کاربری", "❌ لغو عملیات",
+  "🔄 آموزش آپدیت کردن لینک (بروزرسانی)", "🚀 آموزش راه‌اندازی در V2Box", "💬 راهنمای ارسال پیام به پشتیبانی"
+]);
+
 function daysKeyboard() {
   return {
     inline_keyboard: [
       [
         { text: `۵ روزه نامحدود (${(PLAN_PRICES[5]/1000).toLocaleString('fa-IR')} ه.ت)`, callback_data: "plan_5" },
-        { text: `۱ روزه (تست)`, callback_data: "plan_1" }
+        { text: `۱ روزه نامحدود (${(PLAN_PRICES[1]/1000).toLocaleString('fa-IR')} ه.ت)`, callback_data: "plan_1" }
       ],
       [
         { text: `۳۰ روزه نامحدود (${(PLAN_PRICES[30]/1000).toLocaleString('fa-IR')} ه.ت)`, callback_data: "plan_30" },
@@ -398,6 +408,19 @@ export default {
           await clearState(db, user_id);
           const welcome = `👋 <b>به ربات هوشمند ما خوش آمدید!</b>\n\n💡 <b>هدیه ویژه ما:</b> کاربران جدید برای بار اول یک اکانت <b>تست ۲ روزه (تک‌کاربره)</b> رایگان دریافت می‌کنند. همچنین تمامی کاربران می‌توانند <b>هر ماه یکبار، یک اکانت رایگان ۱ روزه</b> دریافت کنند!\n\nپایداری، سرعت و امنیت را با ما تجربه کنید. لطفاً از منوی زیر یک گزینه را انتخاب کنید 👇`;
           await sendMessage(chat_id, welcome, mainMenu(user_id));
+          return new Response('OK');
+        }
+
+        // 🔒 قفل حیاتی: تا وقتی ادمین منتظر تایپ «آدرس ورکر» برای یک کاربر در انتظار است (WAIT_DOMAIN)،
+        // فشردن هر یک از دکمه‌های ثابت پایین صفحه نباید این وضعیت را بی‌سروصدا از بین ببرد،
+        // چون در آن صورت دیگر هیچ راهی برای ارسال لینک به آن کاربر باقی نمی‌ماند.
+        if (user_id === ADMIN_ID && state && state.step === 'WAIT_DOMAIN' && (msg.photo || FIXED_MENU_BUTTON_TEXTS.has(text))) {
+          if (state.target_user) {
+            await clearState(db, state.target_user);
+            await sendMessage(state.target_user, "❌ فرآیند صدور سرویس توسط پشتیبانی لغو شد. می‌توانید مجدداً درخواست دهید.", mainMenu(state.target_user));
+          }
+          await clearState(db, ADMIN_ID);
+          await sendMessage(chat_id, "⚠️ چون از مرحله «ثبت آدرس ورکر» خارج شدید، آن عملیات به‌صورت خودکار لغو شد و کاربر مربوطه از حالت انتظار خارج و مطلع گردید.\n\nبرای تکمیل درخواست او لازم است دوباره از «🛠 مدیریت سرویس‌های کاربر» او را جستجو و اقدام کنید.", adminPanelMenu());
           return new Response('OK');
         }
 
@@ -1412,8 +1435,7 @@ export default {
         else if (data.startsWith('users_')) {
           const userType = data.split('_')[1];
           state.user_type = userType;
-          const isUnlimitedPlan = String(state.days) !== '1';
-          state.type = (userType === '1') ? `تک کاربره${isUnlimitedPlan ? ' (نامحدود)' : ''}` : `چند کاربره${isUnlimitedPlan ? ' (نامحدود)' : ''}`;
+          state.type = (userType === '1') ? "تک کاربره (نامحدود)" : "چند کاربره (نامحدود)";
           state.step = 'WAIT_RECEIPT';
           state.timer_start = Date.now();
           await setState(db, user_id, state);
@@ -1529,6 +1551,8 @@ export default {
           let mkb = { inline_keyboard: [[{ text: "❌ انصراف از این عملیات", callback_data: "cancel_admin" }]] };
           
           await sendMessage(ADMIN_ID, admMsg, mkb);
+          // کیبورد پایین صفحه را هم موقتاً به فقط «لغو عملیات» محدود می‌کنیم تا امکان فشردن اشتباهیِ دکمه دیگر نباشد
+          await sendMessage(ADMIN_ID, "⌨️ تا زمان ارسال آدرس ورکر یا لغو عملیات، فقط از دکمه زیر استفاده کنید:", pendingMenu());
         }
 
         await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
