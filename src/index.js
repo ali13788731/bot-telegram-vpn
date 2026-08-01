@@ -999,9 +999,8 @@ export default {
             WHERE s.cf_domain = ? AND s.user_id != ? LIMIT 1
           `).bind(domainInput, state.target_user).first();
           if (duplicateCheck) {
-              const errKb = { inline_keyboard: [[{ text: "❌ انصراف از این عملیات", callback_data: "cancel_admin" }]] };
               const ownerLink = getUserLink(duplicateCheck.user_id, duplicateCheck.first_name, duplicateCheck.username);
-              await sendMessage(ADMIN_ID, `❌ <b>خطای امنیتی: ورکر تکراری!</b>\n\n⚠️ این ورکر (<code>${domainInput}</code>) قبلاً برای کاربر دیگری ثبت شده است.\n👤 صاحب فعلی: ${ownerLink}\n🆔 آیدی: <code>${duplicateCheck.user_id}</code>\n\nلطفاً یک ورکر جدید وارد کنید یا عملیات را لغو کنید.`, errKb);
+              await sendMessage(ADMIN_ID, `❌ <b>خطای امنیتی: ورکر تکراری!</b>\n\n⚠️ این ورکر (<code>${domainInput}</code>) قبلاً برای کاربر دیگری ثبت شده است.\n👤 صاحب فعلی: ${ownerLink}\n🆔 آیدی: <code>${duplicateCheck.user_id}</code>\n\nلطفاً یک ورکر جدید وارد کنید یا عملیات را لغو کنید.`);
               return new Response('OK');
           }
 
@@ -1048,8 +1047,7 @@ export default {
             // کیبورد موقتِ «لغو عملیات» رو به‌صورت خودکار با پنل عادی مدیریت جایگزین می‌کنیم (دیگه نیازی به کلیک دستی نیست)
             await sendMessage(ADMIN_ID, "✅ به پنل مدیریت بازگشتید.", adminPanelMenu());
           } else {
-            const errKb = { inline_keyboard: [[{ text: "❌ انصراف از این عملیات", callback_data: "cancel_admin" }]] };
-            await sendMessage(ADMIN_ID, `❌ <b>خطا در ارتباط با ورکر!</b>\n💬 <b>دلیل خطا:</b> ${cfRes.error}\n\n💡 <i>لطفاً آدرس صحیح دامنه ورکر را مجدداً ارسال کنید یا عملیات را لغو کنید.</i>`, errKb);
+            await sendMessage(ADMIN_ID, `❌ <b>خطا در ارتباط با ورکر!</b>\n💬 <b>دلیل خطا:</b> ${cfRes.error}\n\n💡 <i>لطفاً آدرس صحیح دامنه ورکر را مجدداً ارسال کنید یا عملیات را لغو کنید.</i>`);
           }
           return new Response('OK');
         }
@@ -1559,12 +1557,8 @@ export default {
 
           await setState(db, ADMIN_ID, { step: 'WAIT_DOMAIN', target_user: targetUser, days, hours, action, user_type: userType });
           
-          let admMsg = `🔗 کاربر جدید است. لطفاً <b>آدرس دامنه ورکر (لینک اصلی)</b> را برای اختصاص دادن به این کاربر تایپ و ارسال کنید.`;
-          let mkb = { inline_keyboard: [[{ text: "❌ انصراف از این عملیات", callback_data: "cancel_admin" }]] };
-          
-          await sendMessage(ADMIN_ID, admMsg, mkb);
-          // کیبورد پایین صفحه را هم موقتاً به فقط «لغو عملیات» محدود می‌کنیم تا امکان فشردن اشتباهیِ دکمه دیگر نباشد
-          await sendMessage(ADMIN_ID, "⌨️ تا زمان ارسال آدرس ورکر یا لغو عملیات، فقط از دکمه زیر استفاده کنید:", pendingMenu());
+          let admMsg = `🔗 کاربر جدید است. لطفاً <b>آدرس دامنه ورکر (لینک اصلی)</b> را برای اختصاص دادن به این کاربر تایپ و ارسال کنید.\n\n⌨️ تا ارسال آدرس ورکر یا لغو عملیات، فقط از دکمهٔ «❌ لغو عملیات» پایین صفحه استفاده کنید.`;
+          await sendMessage(ADMIN_ID, admMsg, pendingMenu());
         }
 
         await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
