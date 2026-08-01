@@ -415,12 +415,18 @@ export default {
         // فشردن هر یک از دکمه‌های ثابت پایین صفحه نباید این وضعیت را بی‌سروصدا از بین ببرد،
         // چون در آن صورت دیگر هیچ راهی برای ارسال لینک به آن کاربر باقی نمی‌ماند.
         if (user_id === ADMIN_ID && state && state.step === 'WAIT_DOMAIN' && (msg.photo || FIXED_MENU_BUTTON_TEXTS.has(text))) {
+          let cancelledUserInfo = "";
           if (state.target_user) {
+            const cUrow = await db.prepare("SELECT first_name, username FROM users WHERE user_id = ?").bind(state.target_user).first();
+            const cUserLink = getUserLink(state.target_user, cUrow ? cUrow.first_name : "کاربر", cUrow ? cUrow.username : "");
+            cancelledUserInfo = `\n\n👤 <b>کاربری که درخواستش لغو شد:</b> ${cUserLink}\n🆔 <b>آیدی:</b> <code>${state.target_user}</code>`;
             await clearState(db, state.target_user);
             await sendMessage(state.target_user, "❌ فرآیند صدور سرویس توسط پشتیبانی لغو شد. می‌توانید مجدداً درخواست دهید.", mainMenu(state.target_user));
           }
           await clearState(db, ADMIN_ID);
-          await sendMessage(chat_id, "⚠️ چون از مرحله «ثبت آدرس ورکر» خارج شدید، آن عملیات به‌صورت خودکار لغو شد و کاربر مربوطه از حالت انتظار خارج و مطلع گردید.\n\nبرای تکمیل درخواست او لازم است دوباره از «🛠 مدیریت سرویس‌های کاربر» او را جستجو و اقدام کنید.", adminPanelMenu());
+          const retryKb = state.target_user ? { inline_keyboard: [[{ text: "🔄 تلاش مجدد برای همین کاربر (ثبت ورکر جدید)", callback_data: `admretrydomain_${state.target_user}_${state.days}_${state.hours}_${state.action}_${state.user_type}` }]] } : null;
+          await sendMessage(chat_id, `⚠️ چون از مرحله «ثبت آدرس ورکر» خارج شدید، آن عملیات به‌صورت خودکار لغو شد و کاربر مربوطه از حالت انتظار خارج و مطلع گردید.${cancelledUserInfo}\n\nبرای تکمیل درخواست او لازم است دوباره از «🛠 مدیریت سرویس‌های کاربر» او را جستجو و اقدام کنید، یا از دکمه زیر استفاده نمایید.`, adminPanelMenu());
+          if (retryKb) await sendMessage(chat_id, "برای شروع مجدد سریع همین درخواست:", retryKb);
           return new Response('OK');
         }
 
@@ -600,7 +606,8 @@ export default {
           const { results: srvList } = await db.prepare("SELECT * FROM services WHERE user_id = ? ORDER BY id DESC").bind(targetUid).all();
 
           if (!srvList || srvList.length === 0) {
-            await sendMessage(ADMIN_ID, `❌ کاربر یافت شد اما هیچ سرویسی برای آیدی <code>${targetUid}</code> ثبت نشده است.`, adminPanelMenu());
+            const newSrvKb = { inline_keyboard: [[{ text: "➕ ثبت سرویس جدید برای این کاربر", callback_data: `admnewsrv_${targetUid}` }]] };
+            await sendMessage(ADMIN_ID, `❌ کاربر یافت شد اما هیچ سرویسی برای آیدی <code>${targetUid}</code> ثبت نشده است.\n\nمی‌توانید یک سرویس جدید مستقیماً برای او ثبت کنید:`, newSrvKb);
             await clearState(db, ADMIN_ID);
             return new Response('OK');
           }
@@ -700,6 +707,21 @@ export default {
             await sendMessage(ADMIN_ID, `❌ خطا در آپدیت ورکر: ${cfRes.error}`, adminPanelMenu());
             await clearState(db, ADMIN_ID);
           }
+          return new Response('OK');
+        }
+
+        // ================= دریافت تعداد روز برای ثبت دستی سرویس جدید (بدون درخواست کاربر) =================
+        if (user_id === ADMIN_ID && state && state.step === 'WAIT_MANUAL_DAYS') {
+          const manualDays = parseInt(text.trim());
+          if (isNaN(manualDays) || manualDays <= 0) {
+            await sendMessage(ADMIN_ID, "❌ لطفاً یک عدد معتبر بر حسب روز وارد کنید (مثلاً: 30):");
+            return new Response('OK');
+          }
+          const typeKb = { inline_keyboard: [[
+            { text: "👤 تک‌کاربره", callback_data: `admmanualtype_${manualDays}_${state.target_user}_1` },
+            { text: "👥 چندکاربره", callback_data: `admmanualtype_${manualDays}_${state.target_user}_0` }
+          ]] };
+          await sendMessage(ADMIN_ID, `📦 پلن <b>${manualDays} روزه</b> برای کاربر <code>${state.target_user}</code>. حالا نوع مصرف را انتخاب کنید:`, typeKb);
           return new Response('OK');
         }
 
@@ -1077,7 +1099,7 @@ export default {
               return new Response('OK');
           }
 
-          await sendMessage(ADMIN_ID, "⏳ در حال بررسی اعتبار و اتصال به آدرس ورکر جدید...");
+          await sendMessage(ADMIN_ID, "⏳ در حال بررسی اعتبار ورکر جدید و انتقال دقیق اطلاعات ورکر قبلی (زمان، تعداد سرویس‌ها، حالت تک/چند‌کاربره)...");
 
           const validation = await validateWorkerDomain(domainInput);
           if (!validation.success) {
@@ -1087,15 +1109,35 @@ export default {
           }
 
           const oldDomain = srv.cf_domain || "";
-          let newSubLink = srv.sub_link;
-          if (newSubLink && oldDomain) {
-             // اگر لینک سابسکریپشن شامل آدرس قدیمی ورکر باشد، آن را با آدرس جدید جایگزین می‌کنیم
-             const oldPure = oldDomain.replace(/^https?:\/\//i, '').replace(/\/$/, "");
-             const newPure = domainInput.replace(/^https?:\/\//i, '').replace(/\/$/, "");
-             if (oldPure) newSubLink = newSubLink.split(oldPure).join(newPure);
+
+          // 1) وضعیت زنده و دقیق ورکر قبلی (برای کیل‌سوییچ) را می‌خوانیم
+          const oldWorkerLiveData = await getWorkerStatus(oldDomain);
+          const isSingleFromDB = srv.plan_type.includes('یک کاربره');
+
+          // 2) زمان دقیق انقضا (تا دقیقه) و حالت تک/چندکاربره را دقیقاً از رکورد دیتابیس (که همیشه به‌روز است) روی ورکر جدید اعمال می‌کنیم
+          const cfRes = await updateCloudflareExp(domainInput, 0, 0, isSingleFromDB, srv.user_id, db);
+          if (!cfRes.success || !cfRes.subLink) {
+              const errKb = { inline_keyboard: [[{ text: "❌ انصراف از این عملیات", callback_data: "cancel_admin" }]] };
+              await sendMessage(ADMIN_ID, `❌ <b>خطا در انتقال اطلاعات به ورکر جدید!</b>\n💬 <b>دلیل خطا:</b> ${cfRes.error || 'نامشخص'}\n\n💡 هیچ تغییری در دیتابیس اعمال نشد. لطفاً یک آدرس صحیح وارد کنید یا عملیات را لغو کنید.`, errKb);
+              return new Response('OK');
           }
 
-          await db.prepare("UPDATE services SET cf_domain = ?, sub_link = ? WHERE id = ?").bind(domainInput, newSubLink, state.service_id).run();
+          // 3) وضعیت قطع فوری (کیل‌سوییچ) ورکر قبلی را هم روی ورکر جدید تکرار می‌کنیم
+          let apiDomainNew = domainInput;
+          if (apiDomainNew.includes("?url=")) apiDomainNew = decodeURIComponent(apiDomainNew.split("?url=")[1]).replace(/\/$/, "");
+          const newWorkerUrl = `${apiDomainNew}/${CF_ADMIN_PATH}?token=${CF_ADMIN_TOKEN}`;
+          if (oldWorkerLiveData && oldWorkerLiveData.killSwitch === true) {
+            await fetch(newWorkerUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: "toggleKillSwitch" }) });
+          }
+
+          // 4) تمام سرویس‌های ثبت‌شده روی همین ورکر قبلی (نه فقط سرویس انتخاب‌شده) به ورکر جدید منتقل می‌شوند
+          const { results: siblingSrvs } = await db.prepare("SELECT id, user_id FROM services WHERE cf_domain = ?").bind(oldDomain).all();
+          const rowsToMigrate = (siblingSrvs && siblingSrvs.length) ? siblingSrvs : [{ id: srv.id, user_id: srv.user_id }];
+
+          for (const row of rowsToMigrate) {
+            await db.prepare("UPDATE services SET cf_domain = ?, sub_link = ?, exp_date = ? WHERE id = ?")
+              .bind(domainInput, cfRes.subLink, cfRes.newExpDate, row.id).run();
+          }
 
           const updatedSrvAfterEdit = await db.prepare("SELECT * FROM services WHERE id = ?").bind(state.service_id).first();
           const workerDataAfterEdit = await getWorkerStatus(updatedSrvAfterEdit.cf_domain);
@@ -1105,13 +1147,15 @@ export default {
           // به‌جای پاک کردن استیت و بازگشت به منوی اصلی، در همان صفحه مدیریت سرویس باقی می‌مانیم
           await setState(db, ADMIN_ID, { step: 'MANAGE_FIXED_ACTIONS', service_id: state.service_id });
 
-          await sendMessage(ADMIN_ID, `✅ آدرس ورکر سرویس #${state.service_id} با موفقیت ویرایش شد.\n\n🌐 <b>آدرس جدید:</b>\n<code>${domainInput}</code>`, adminServiceKeyboard(isSingleTypeAfterEdit, isKsActiveAfterEdit));
+          await sendMessage(ADMIN_ID, `✅ آدرس ورکر با موفقیت ویرایش شد و اطلاعات به‌طور کامل منتقل گردید.\n\n🌐 <b>آدرس جدید:</b>\n<code>${domainInput}</code>\n📦 <b>تعداد سرویس‌های منتقل‌شده روی این ورکر:</b> ${rowsToMigrate.length}\n👥 <b>حالت:</b> ${isSingleTypeAfterEdit ? 'تک‌کاربره' : 'چندکاربره'}\n🔌 <b>قطع فوری:</b> ${isKsActiveAfterEdit ? '🛑 مسدود' : '✅ آزاد'}`, adminServiceKeyboard(isSingleTypeAfterEdit, isKsActiveAfterEdit));
 
-          const editedUserMsg = `⚠️ <b>توجه: آدرس اتصال سرویس شما توسط پشتیبانی ویرایش شد.</b>\n\nاین تغییر معمولاً به این دلیل انجام می‌شود که آدرس قبلی به هر دلیلی (از جمله فیلترشدن) دچار مشکل دسترسی شده است.\n\n🔗 <b>لینک اتصال سابسکریپشن جدید شما:</b>\n<code>${newSubLink}</code>\n\n💡 لطفاً از این پس فقط از لینک جدید برای اتصال استفاده کنید.`;
-          if (newSubLink) {
-            await callTelegram('sendPhoto', { chat_id: srv.user_id, photo: getQRUrl(newSubLink), caption: editedUserMsg, parse_mode: 'HTML', reply_markup: getImportKeyboard(newSubLink, botOrigin) });
-          } else {
-            await sendMessage(srv.user_id, editedUserMsg);
+          // اطلاع‌رسانی به تمام کاربران متأثر (معمولاً یک کاربر، اما اگر چند کاربر روی این ورکر بودند همه مطلع می‌شوند)
+          const notifiedUsers = new Set();
+          const editedUserMsg = `⚠️ <b>توجه: آدرس اتصال سرویس شما توسط پشتیبانی ویرایش شد.</b>\n\nاین تغییر معمولاً به این دلیل انجام می‌شود که آدرس قبلی به هر دلیلی (از جمله فیلترشدن) دچار مشکل دسترسی شده است. تمام اطلاعات شما (زمان باقی‌مانده و حالت تک/چندکاربره) بدون هیچ کم و کاستی به آدرس جدید منتقل شد.\n\n🔗 <b>لینک اتصال سابسکریپشن جدید شما:</b>\n<code>${cfRes.subLink}</code>\n\n💡 لطفاً از این پس فقط از لینک جدید برای اتصال استفاده کنید.`;
+          for (const row of rowsToMigrate) {
+            if (notifiedUsers.has(row.user_id)) continue;
+            notifiedUsers.add(row.user_id);
+            await callTelegram('sendPhoto', { chat_id: row.user_id, photo: getQRUrl(cfRes.subLink), caption: editedUserMsg, parse_mode: 'HTML', reply_markup: getImportKeyboard(cfRes.subLink, botOrigin) });
           }
           return new Response('OK');
         }
@@ -1338,7 +1382,8 @@ export default {
           const { results: srvList } = await db.prepare("SELECT * FROM services WHERE user_id = ? ORDER BY id DESC").bind(targetUid).all();
 
           if (!srvList || srvList.length === 0) {
-            await sendMessage(ADMIN_ID, `❌ کاربر یافت شد اما هیچ سرویسی برای آیدی <code>${targetUid}</code> ثبت نشده است.`, adminPanelMenu());
+            const newSrvKb = { inline_keyboard: [[{ text: "➕ ثبت سرویس جدید برای این کاربر", callback_data: `admnewsrv_${targetUid}` }]] };
+            await sendMessage(ADMIN_ID, `❌ کاربر یافت شد اما هیچ سرویسی برای آیدی <code>${targetUid}</code> ثبت نشده است.\n\nمی‌توانید یک سرویس جدید مستقیماً برای او ثبت کنید:`, newSrvKb);
             await clearState(db, ADMIN_ID);
             return new Response('OK');
           }
@@ -1477,6 +1522,43 @@ export default {
           }
           await clearState(db, targetUser);
           await sendMessage(targetUser, "❌ متاسفانه درخواست / رسید پرداختی شما توسط بخش پشتیبانی رد شد. در صورت بروز مشکل با ادمین در ارتباط باشید.", mainMenu(targetUser));
+        }
+
+        // ================= شروع مجدد سریع ثبت ورکر پس از لغو خودکار =================
+        else if (data.startsWith('admretrydomain_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const parts = data.split('_');
+          const targetUser = parts[1];
+          const days = parts[2];
+          const hours = parts[3];
+          const action = parts[4];
+          const userType = parts[5];
+          await setState(db, ADMIN_ID, { step: 'WAIT_DOMAIN', target_user: targetUser, days, hours, action, user_type: userType });
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+          await sendMessage(ADMIN_ID, `🔗 لطفاً <b>آدرس دامنه ورکر (لینک اصلی)</b> را برای اختصاص دادن به کاربر <code>${targetUser}</code> تایپ و ارسال کنید:`, pendingMenu());
+        }
+
+        // ================= ثبت دستی سرویس جدید توسط ادمین (بدون نیاز به درخواست کاربر) =================
+        else if (data.startsWith('admnewsrv_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const targetUser = data.split('_')[1];
+          await setState(db, ADMIN_ID, { step: 'WAIT_MANUAL_DAYS', target_user: targetUser });
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+          await sendMessage(ADMIN_ID, `⏳ تعداد روزهای سرویسی که می‌خواهید برای کاربر <code>${targetUser}</code> ثبت کنید را تایپ کنید (مثلاً: 30):`, pendingMenu());
+        }
+
+        // ================= انتخاب حالت تک/چندکاربره برای ثبت دستی سرویس =================
+        else if (data.startsWith('admmanualtype_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const parts = data.split('_');
+          const days = parts[1];
+          const targetUser = parts[2];
+          const userType = parts[3];
+          await setState(db, ADMIN_ID, { step: 'WAIT_DOMAIN', target_user: targetUser, days, hours: 0, action: 'buy', user_type: userType });
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `📦 پلن ${days} روزه (${userType === '1' ? 'تک‌کاربره' : 'چندکاربره'}) انتخاب شد.`, parse_mode: "HTML" });
+          let admMsgManual = `🔗 لطفاً <b>آدرس دامنه ورکر (لینک اصلی)</b> را برای اختصاص دادن به کاربر <code>${targetUser}</code> تایپ و ارسال کنید.\n\n💡 <i>می‌توانید همان آدرس ورکر خودتان یا هر دامنه دیگری که در اختیار دارید را وارد کنید؛ همین دامنه به این کاربر اختصاص داده می‌شود.</i>\n\n⌨️ تا ارسال آدرس ورکر یا لغو عملیات، فقط از دکمهٔ «❌ لغو عملیات» پایین صفحه استفاده کنید.`;
+          await sendMessage(ADMIN_ID, admMsgManual, pendingMenu());
         }
 
         // ================= تایید پرداختی / تست توسط ادمین =================
