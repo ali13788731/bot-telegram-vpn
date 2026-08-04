@@ -288,16 +288,17 @@ function mainMenu(user_id) {
   const keyboard = [
     [{ text: "🎁 دریافت اکانت رایگان (تست)" }, { text: "🛒 خرید سرویس" }],
     [{ text: "📚 آموزش‌ها" }, { text: "📦 سرویس‌های من" }],
-    [{ text: "👤 وضعیت من" }, { text: "📞 ارتباط با پشتیبانی" }]
+    [{ text: "🤝 دعوت دوستان (هدیه ۵ روزه)" }, { text: "👤 وضعیت من" }],
+    [{ text: "📞 ارتباط با پشتیبانی" }]
   ];
   return { keyboard, resize_keyboard: true };
 }
 
 function adminPanelMenu() {
-  // پنل اصلی و تنها پنل ادمین (بدون دکمه بازگشت، چون همین صفحه، صفحه اصلی ادمین است)
+  // پنل اصلی و تنها پنل ادمین
   return { 
     keyboard: [
-      [{ text: "👥 لیست کامل کاربران و خریدها" }],
+      [{ text: "📊 گزارش فروش" }, { text: "👥 لیست کامل کاربران و خریدها" }],
       [{ text: "🛠 مدیریت سرویس‌های کاربر" }, { text: "📖 راهنمای پنل مدیریت" }],
       [{ text: "📢 ارسال اطلاعیه" }, { text: "⚙️ تنظیمات ربات" }]
     ], 
@@ -308,6 +309,7 @@ function adminPanelMenu() {
 function settingsMenu() {
   return {
     keyboard: [
+      [{ text: "🎟 مدیریت کدهای تخفیف" }],
       [{ text: "🗑 پاک کردن کامل دیتابیس" }],
       [{ text: "🔙 بازگشت به پنل مدیریت" }]
     ],
@@ -349,7 +351,7 @@ function tutorialsMenu() {
 // ================= مجموعه متن تمام دکمه‌های ثابت (کیبورد پایین صفحه) =================
 // برای تشخیص این‌که آیا متن ارسالی توسط ادمین «فشردن یک دکمه منو» است یا «ورودی واقعی» (مثل آدرس ورکر)
 const FIXED_MENU_BUTTON_TEXTS = new Set([
-  "🎁 دریافت اکانت رایگان (تست)", "🛒 خرید سرویس", "📚 آموزش‌ها", "📦 سرویس‌های من", "👤 وضعیت من", "📞 ارتباط با پشتیبانی", "⚙️ ورود به پنل مدیریت حرفه‌ای",
+  "🤝 دعوت دوستان (هدیه ۵ روزه)", "🎟 مدیریت کدهای تخفیف", "📊 گزارش فروش", "🎁 دریافت اکانت رایگان (تست)", "🛒 خرید سرویس", "📚 آموزش‌ها", "📦 سرویس‌های من", "👤 وضعیت من", "📞 ارتباط با پشتیبانی", "⚙️ ورود به پنل مدیریت حرفه‌ای",
   "👥 لیست کامل کاربران و خریدها", "🛠 مدیریت سرویس‌های کاربر", "📖 راهنمای پنل مدیریت", "🏠 بازگشت به منوی اصلی",
   "📢 ارسال اطلاعیه", "⚙️ تنظیمات ربات", "🗑 پاک کردن کامل دیتابیس", "🔙 بازگشت به پنل مدیریت",
   "⏳ صفر کردن زمان", "➕ تمدید / شارژ", "👥 تبدیل به چندکاربره", "👤 تبدیل به تک‌کاربره", "✅ وصل فوری", "🛑 قطع فوری", "✏️ ویرایش ورکر",
@@ -444,13 +446,43 @@ export default {
         const username = msg.from.username || "";
         let state = await getState(db, user_id);
 
+        // بررسی اینکه آیا این کاربر کاملاً جدید است (برای سیستم رفرال)
+        const checkIsNew = await db.prepare("SELECT user_id FROM users WHERE user_id = ?").bind(user_id).first();
+        const isBrandNewUser = !checkIsNew;
+
         // بروزرسانی اطلاعات کاربر در دیتابیس
         await db.prepare("INSERT INTO users (user_id, username, first_name, join_date_shamsi) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET username = excluded.username, first_name = excluded.first_name")
             .bind(user_id, username, first_name, getShamsiNow()).run();
 
-        // دستور شروع
-        if (text === '/start') {
+        // دستور شروع و بررسی لینک دعوت
+        if (text.startsWith('/start')) {
           await clearState(db, user_id);
+
+          // پردازش لینک رفرال
+          const parts = text.split(' ');
+          if (parts.length > 1 && isBrandNewUser) {
+            const referrerId = parseInt(parts[1]);
+            if (referrerId && referrerId !== user_id) {
+              try {
+                // ثبت در دیتابیس رفرال
+                await db.prepare("INSERT INTO referrals (referrer_id, referred_id) VALUES (?, ?)").bind(referrerId, user_id).run();
+                
+                // پیدا کردن آخرین سرویس فعال شخص دعوت‌کننده
+                const refActiveSrv = await db.prepare("SELECT * FROM services WHERE user_id = ? AND status = 'ACTIVE' ORDER BY id DESC LIMIT 1").bind(referrerId).first();
+                
+                if (refActiveSrv) {
+                  // اضافه کردن 5 روز به سرویس دعوت کننده
+                  const cfRes = await updateCloudflareExp(refActiveSrv.cf_domain, 5, 0, refActiveSrv.plan_type.includes('یک کاربره'), referrerId, db);
+                  if (cfRes.success) {
+                    await db.prepare("UPDATE services SET exp_date = ? WHERE id = ?").bind(cfRes.newExpDate, refActiveSrv.id).run();
+                    await sendMessage(referrerId, `🎉 <b>مژده!</b>\n\nیک کاربر جدید با لینک دعوت شما وارد ربات شد.\n🎁 <b>۵ روز هدیه</b> به اعتبار سرویس شما (شناسه #${refActiveSrv.id}) اضافه شد!`);
+                  }
+                } else {
+                  await sendMessage(referrerId, `🎉 <b>مژده!</b>\n\nیک کاربر جدید با لینک دعوت شما عضو شد.\n⚠️ <i>توجه: از آنجایی که شما در حال حاضر سرویس فعالی ندارید، امکان اضافه کردن هدیه ۵ روزه به سرویس شما وجود نداشت. (هدیه فقط روی سرویس‌های فعال اعمال می‌شود).</i>`);
+                }
+              } catch (err) { console.log("Referral Error: ", err); }
+            }
+          }
 
           // ادمین اصلاً پنل خرید را نمی‌بیند و مستقیماً وارد پنل حرفه‌ای مدیریت می‌شود
           if (user_id === ADMIN_ID) {
@@ -816,8 +848,45 @@ export default {
           return new Response('OK');
         }
 
-        if (text === "⚙️ ورود به پنل مدیریت حرفه‌ای" && user_id === ADMIN_ID) {
-          await sendMessage(chat_id, "👨‍💻 <b>به پنل مدیریت حرفه‌ای خوش آمدید.</b>\nاز گزینه‌های زیر استفاده کنید:", adminPanelMenu());
+        if (text === "📊 گزارش فروش" && user_id === ADMIN_ID) {
+          const shamsiNow = getShamsiNow();
+          // جداسازی تاریخ از ساعت (مثلا 1403/05/12)
+          const todayStr = shamsiNow.split(/[ ,-]/)[0];
+          const monthStr = todayStr.substring(0, 7);
+          const yearStr = todayStr.substring(0, 4);
+
+          const { results: allServices } = await db.prepare("SELECT plan_days, plan_type, purchase_date_shamsi FROM services").all();
+
+          let dailyCount = 0, dailyIncome = 0;
+          let monthlyCount = 0, monthlyIncome = 0;
+          let yearlyCount = 0, yearlyIncome = 0;
+          let totalCount = 0, totalIncome = 0;
+
+          allServices.forEach(s => {
+            if (!s.purchase_date_shamsi) return;
+            const pDate = s.purchase_date_shamsi;
+            
+            // محاسبه قیمت بر اساس روز و حالت چندکاربره
+            let price = PLAN_PRICES[s.plan_days] || 0;
+            if (s.plan_type.includes('چند کاربره')) price += 20000;
+            if (s.plan_type.includes('رایگان') || s.plan_type.includes('تست')) price = 0;
+
+            totalCount++;
+            totalIncome += price;
+
+            if (pDate.startsWith(todayStr)) { dailyCount++; dailyIncome += price; }
+            if (pDate.startsWith(monthStr)) { monthlyCount++; monthlyIncome += price; }
+            if (pDate.startsWith(yearStr)) { yearlyCount++; yearlyIncome += price; }
+          });
+
+          let reportMsg = `📊 <b>گزارش جامع فروش</b>\n\n`;
+          reportMsg += `📅 <b>امروز (${todayStr}):</b>\nتعداد: ${dailyCount} سرویس | درآمد: ${dailyIncome.toLocaleString('fa-IR')} تومان\n\n`;
+          reportMsg += `🗓 <b>این ماه (${monthStr}):</b>\nتعداد: ${monthlyCount} سرویس | درآمد: ${monthlyIncome.toLocaleString('fa-IR')} تومان\n\n`;
+          reportMsg += `📆 <b>امسال (${yearStr}):</b>\nتعداد: ${yearlyCount} سرویس | درآمد: ${yearlyIncome.toLocaleString('fa-IR')} تومان\n\n`;
+          reportMsg += `📈 <b>فروش کل تاریخ:</b>\nتعداد: ${totalCount} سرویس | درآمد: ${totalIncome.toLocaleString('fa-IR')} تومان\n`;
+
+          const kb = { inline_keyboard: [[{ text: "🔍 گزارش یک تاریخ خاص", callback_data: "admreport_custom" }]] };
+          await sendMessage(ADMIN_ID, reportMsg, kb);
           return new Response('OK');
         }
 
@@ -981,6 +1050,25 @@ export default {
           await sendMessage(chat_id, `👨‍💻 تیم پشتیبانی ما همیشه پاسخگوی شماست.\n\nبرای ارتباط مستقیم به آیدی زیر پیام دهید:\n${SUPPORT_ID}`);
           return new Response('OK');
         }
+		
+		
+		// ================= دریافت لینک معرفی دوستان =================
+        if (text === "🤝 دعوت دوستان (هدیه ۵ روزه)" && user_id !== ADMIN_ID) {
+          // دریافت اطلاعات ربات برای ساخت لینک دعوت
+          const botInfo = await callTelegram('getMe');
+          let botUsername = "YOUR_BOT_USERNAME"; // نام کاربری پیش‌فرض در صورت خطا
+          if (botInfo && botInfo.ok) {
+             botUsername = botInfo.result.username;
+          }
+          
+          const refLink = `https://t.me/${botUsername}?start=${user_id}`;
+          
+          const msg = `🎁 <b>سیستم معرفی دوستان (کسب هدیه)</b>\n\nبا دعوت از دوستان خود به این ربات، به ازای هر نفری که عضو شود، <b>۵ روز سرویس رایگان</b> هدیه بگیرید!\n\n📌 <b>قوانین:</b>\n۱. شخصی که دعوت می‌کنید نباید قبلاً عضو ربات بوده باشد.\n۲. هدیه ۵ روزه به صورت خودکار به <b>آخرین سرویس فعال شما</b> اضافه می‌شود.\n۳. محدودیتی در تعداد دعوت‌ها وجود ندارد!\n\n🔗 <b>لینک اختصاصی دعوت شما:</b>\n<code>${refLink}</code>\n\nهمین الان این پیام را برای دوستانتان فوروارد کنید! 🚀`;
+          
+          await sendMessage(chat_id, msg);
+          return new Response('OK');
+        }		
+		
 
         if (text === "🛒 خرید سرویس" && user_id !== ADMIN_ID) {
           const rules = "⚠️ <b>قوانین سرویس:</b>\nسرویس‌های ما کاملاً نامحدود هستند، اما شامل قانون مصرف منصفانه می‌شوند. در صورت مصرف غیرعادی، اکانت موقتاً قطع شده و از روز بعد متصل می‌گردد.\n\n⏳ لطفاً مدت زمان سرویس خود را انتخاب کنید:";
@@ -1011,7 +1099,14 @@ export default {
           }
 
           const testDays = isFirstTime ? 2 : 1;
-          const msgText = isFirstTime ? `🎁 <b>مژده:</b> چون بار اول شماست، یک اکانت تست <b>۲ روزه (کاملاً تک‌کاربره)</b> به شما تعلق می‌گیرد!\n(برای ماه‌های آینده، هدیه شما ۱ روزه خواهد بود)` : `🎁 اکانت هدیه ماهانه شما (<b>۱ روزه و تک‌کاربره</b>) در حال آماده‌سازی است...`;
+          let msgText = "";
+          
+          if (isFirstTime) {
+              msgText = `🎁 <b>مژده:</b> چون بار اول شماست، یک اکانت تست <b>۲ روزه (کاملاً تک‌کاربره)</b> به شما تعلق می‌گیرد!\n(برای ماه‌های آینده، هدیه شما ۱ روزه خواهد بود)`;
+          } else {
+              msgText = `🎁 اکانت هدیه ماهانه شما (<b>۱ روزه و تک‌کاربره</b>) در حال آماده‌سازی است...\n\n⚠️ <b>هشدار:</b> این اکانت تست مجدد است. لطفاً قوانین مصرف منصفانه را رعایت کنید، در غیر این صورت امکان دریافت تست در ماه‌های آینده مسدود خواهد شد.`;
+          }
+          
           await sendMessage(user_id, msgText);
           
           let newState = { days: testDays, hours: 0, type: `اکانت تست (${testDays} روزه - تک‌کاربره)`, is_test: true, user_type: '1', step: 'PENDING_ADMIN' };
@@ -1231,6 +1326,55 @@ export default {
           await sendMessage(chat_id, "⚙️ <b>تنظیمات ربات</b>\n\nاز گزینه‌های زیر استفاده کنید:", settingsMenu());
           return new Response('OK');
         }
+		
+		
+		// ================= مدیریت کدهای تخفیف =================
+        if (text === "🎟 مدیریت کدهای تخفیف" && user_id === ADMIN_ID) {
+          const { results: discounts } = await db.prepare("SELECT * FROM discounts ORDER BY id DESC").all();
+          let msg = "🎟 <b>لیست کدهای تخفیف فعال:</b>\n\n";
+          
+          if (!discounts || discounts.length === 0) {
+            msg += "هیچ کد تخفیفی ثبت نشده است.\n";
+          } else {
+            discounts.forEach(d => {
+              msg += `🏷 <b>کد:</b> <code>${d.code}</code>\n📉 درصد: ${d.percent}%\n👥 استفاده شده: ${d.used_count} از ${d.max_uses}\n⏳ انقضا: ${d.expire_date_shamsi}\n➖➖➖➖\n`;
+            });
+          }
+          
+          const kb = { inline_keyboard: [[{ text: "➕ افزودن کد تخفیف جدید", callback_data: "admadd_discount" }]] };
+          await sendMessage(ADMIN_ID, msg, kb);
+          return new Response('OK');
+        }
+
+        // دریافت اطلاعات کد تخفیف جدید از ادمین
+        if (user_id === ADMIN_ID && state && state.step === 'WAIT_DISCOUNT_DATA') {
+          // فرمت مورد انتظار: کد-درصد-تعداد-تاریخ
+          const parts = text.split('-');
+          if (parts.length !== 4) {
+            await sendMessage(ADMIN_ID, "❌ فرمت وارد شده اشتباه است. لطفاً دقیقاً مانند مثال ارسال کنید:\n\n<code>NOROUZ-20-50-1403/01/15</code>", pendingMenu());
+            return new Response('OK');
+          }
+          
+          const [code, percentStr, maxUsesStr, expireDate] = parts;
+          const percent = parseInt(percentStr);
+          const maxUses = parseInt(maxUsesStr);
+          
+          if (isNaN(percent) || isNaN(maxUses)) {
+             await sendMessage(ADMIN_ID, "❌ درصد یا تعداد استفاده باید عدد باشند.", pendingMenu());
+             return new Response('OK');
+          }
+
+          try {
+            await db.prepare("INSERT INTO discounts (code, percent, max_uses, expire_date_shamsi) VALUES (?, ?, ?, ?)").bind(code.trim(), percent, maxUses, expireDate.trim()).run();
+            await clearState(db, ADMIN_ID);
+            await sendMessage(ADMIN_ID, `✅ کد تخفیف <b>${code}</b> با موفقیت ثبت شد!`, settingsMenu());
+          } catch (e) {
+            await sendMessage(ADMIN_ID, "❌ این کد تخفیف قبلاً ثبت شده است یا خطایی رخ داد.", pendingMenu());
+          }
+          return new Response('OK');
+        }		
+		
+		
 
         if (text === "🗑 پاک کردن کامل دیتابیس" && user_id === ADMIN_ID) {
           const confirmKb = {
@@ -1308,6 +1452,78 @@ export default {
             ]
           };
           await callTelegram('copyMessage', { chat_id: ADMIN_ID, from_chat_id: chat_id, message_id: msg.message_id, reply_markup: confirmKb });
+          return new Response('OK');
+        }
+		
+		
+		// دریافت تاریخ خاص برای گزارش‌گیری از ادمین
+        if (user_id === ADMIN_ID && state && state.step === 'WAIT_REPORT_DATE') {
+          const targetDate = text.trim(); 
+          const { results: targetServices } = await db.prepare("SELECT plan_days, plan_type, purchase_date_shamsi FROM services WHERE purchase_date_shamsi LIKE ?").bind(`${targetDate}%`).all();
+
+          let targetCount = 0, targetIncome = 0;
+          if (targetServices && targetServices.length > 0) {
+            targetServices.forEach(s => {
+              let price = PLAN_PRICES[s.plan_days] || 0;
+              if (s.plan_type.includes('چند کاربره')) price += 20000;
+              if (s.plan_type.includes('رایگان') || s.plan_type.includes('تست')) price = 0;
+              targetCount++;
+              targetIncome += price;
+            });
+          }
+
+          let msg = `📊 <b>گزارش فروش برای تاریخ:</b> <code>${targetDate}</code>\n\n`;
+          msg += `تعداد فروش: <b>${targetCount} سرویس</b>\n`;
+          msg += `مجموع درآمد: <b>${targetIncome.toLocaleString('fa-IR')} تومان</b>`;
+
+          await clearState(db, ADMIN_ID);
+          await sendMessage(ADMIN_ID, msg, adminPanelMenu());
+          return new Response('OK');
+        }	
+		
+		
+
+        // بررسی کد تخفیف ارسال شده توسط کاربر
+        if (state && state.step === 'WAIT_DISCOUNT_CODE' && user_id !== ADMIN_ID) {
+          const codeInput = text.trim();
+          const shamsiNow = getShamsiNow().split(/[ ,-]/)[0]; 
+          
+          const discount = await db.prepare("SELECT * FROM discounts WHERE code = ?").bind(codeInput).first();
+          
+          if (!discount) {
+             await sendMessage(chat_id, "❌ کد تخفیف وارد شده نامعتبر است.\nلطفاً کد صحیح را ارسال کنید یا از دکمه مرحله قبل برای رد شدن استفاده کنید.");
+             return new Response('OK');
+          }
+          
+          if (discount.used_count >= discount.max_uses) {
+             await sendMessage(chat_id, "❌ ظرفیت استفاده از این کد تخفیف به پایان رسیده است.");
+             return new Response('OK');
+          }
+          
+          if (discount.expire_date_shamsi < shamsiNow) {
+             await sendMessage(chat_id, "❌ مهلت استفاده از این کد تخفیف به پایان رسیده است.");
+             return new Response('OK');
+          }
+
+          let basePrice = PLAN_PRICES[state.days] || 0;
+          let multiUserMessage = "";
+          if (state.user_type !== '1') {
+             basePrice += 20000;
+             multiUserMessage = "\n💡 <i>به دلیل انتخاب سرویس چند کاربره، مبلغ ۲۰,۰۰۰ تومان به قیمت پایه افزوده شد.</i>";
+          }
+          
+          const discountAmount = (basePrice * discount.percent) / 100;
+          const finalPrice = basePrice - discountAmount;
+
+          await db.prepare("UPDATE discounts SET used_count = used_count + 1 WHERE id = ?").bind(discount.id).run();
+
+          state.step = 'WAIT_RECEIPT';
+          state.timer_start = Date.now();
+          await setState(db, user_id, state);
+          
+          const factor = `🎉 <b>کد تخفیف ${discount.percent} درصدی اعمال شد!</b>\n\n💳 <b>فاکتور نهایی ${planDaysLabel(state.days)} (${state.type})</b>\n💵 قیمت اصلی: <s>${basePrice.toLocaleString('fa-IR')} تومان</s>\n🎁 مبلغ قابل پرداخت: <b>${finalPrice.toLocaleString('fa-IR')} تومان</b>${multiUserMessage}\n\nلطفاً مبلغ فوق را واریز کرده و <b>عکس رسید تراکنش</b> را ارسال کنید:\n\n💳 <code>${CARD_NUMBER}</code>\n\n⏱ <i>شما ۱۰ دقیقه فرصت دارید.</i>`;
+          
+          await sendMessage(chat_id, factor, backAndSupportKeyboard());
           return new Response('OK');
         }
 
@@ -1696,6 +1912,27 @@ export default {
           await sendMessage(ADMIN_ID, "❌ ارسال اطلاعیه لغو شد.", adminPanelMenu());
           return new Response('OK');
         }
+		
+		// ================= افزودن کد تخفیف =================
+        if (data === 'admadd_discount') {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          await setState(db, ADMIN_ID, { step: 'WAIT_DISCOUNT_DATA' });
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+          const guide = `➕ <b>افزودن کد تخفیف جدید</b>\n\nلطفاً اطلاعات کد تخفیف را با خط تیره (-) و دقیقاً با فرمت زیر بفرستید:\n\n<code>کد-درصدتخفیف-تعدادمجاز-تاریخ انقضا</code>\n\n📌 <b>مثال:</b>\n<code>VIP20-20-100-1403/12/29</code>\n\n(یعنی کد VIP20 با 20 درصد تخفیف، برای 100 نفر، تا تاریخ 1403/12/29)`;
+          await sendMessage(ADMIN_ID, guide, pendingMenu());
+          return new Response('OK');
+        }
+		
+		// کلیک روی دکمه جستجوی تاریخ خاص
+        if (data === 'admreport_custom') {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          await setState(db, ADMIN_ID, { step: 'WAIT_REPORT_DATE' });
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+          await callTelegram('editMessageReplyMarkup', { chat_id, message_id: msg_id, reply_markup: { inline_keyboard: [] } });
+          
+          await sendMessage(ADMIN_ID, "🔍 لطفاً تاریخ مورد نظر خود را با فرمت <b>سال/ماه/روز</b> تایپ و ارسال کنید:\n\nمثال: <code>1403/05/15</code>", pendingMenu());
+          return new Response('OK');
+        }		
 
         // --- نمایش QR و لینک مستقیم در سرویس‌های من ---
         if (data.startsWith('getqr_')) {
@@ -1727,23 +1964,41 @@ export default {
           const userType = data.split('_')[1];
           state.user_type = userType;
           state.type = (userType === '1') ? "تک کاربره (نامحدود)" : "چند کاربره (نامحدود)";
+          state.step = 'WAIT_DISCOUNT_CODE'; // رفتن به مرحله کد تخفیف
+          await setState(db, user_id, state);
+          
+          const kb = {
+             inline_keyboard: [[{ text: "➡️ ادامه بدون کد تخفیف (صدور فاکتور)", callback_data: "skip_discount" }]]
+          };
+          
+          await callTelegram('editMessageText', { 
+             chat_id, 
+             message_id: msg_id, 
+             text: "🏷 <b>کد تخفیف</b>\n\nاگر کد تخفیفی دارید، لطفاً آن را تایپ و ارسال کنید. در غیر این صورت برای دریافت فاکتور روی دکمه زیر کلیک کنید:", 
+             reply_markup: kb, 
+             parse_mode: "HTML" 
+          });
+        }
+
+        // ================= پردازش دکمه ادامه بدون تخفیف =================
+        else if (data === 'skip_discount') {
+          if (!state || state.step !== 'WAIT_DISCOUNT_CODE') return new Response('OK');
+          
           state.step = 'WAIT_RECEIPT';
           state.timer_start = Date.now();
           await setState(db, user_id, state);
           
           let planPrice = PLAN_PRICES[state.days] || 0;
           let multiUserMessage = "";
-          
-          if (userType !== '1') {
+          if (state.user_type !== '1') {
             planPrice += 20000;
-            multiUserMessage = "\n\n💡 <i>توجه: به دلیل انتخاب سرویس چند کاربره، مبلغ ۲۰,۰۰۰ تومان به قیمت پایه افزوده شده است.</i>";
+            multiUserMessage = "\n💡 <i>به دلیل انتخاب سرویس چند کاربره، مبلغ ۲۰,۰۰۰ تومان به قیمت پایه افزوده شد.</i>";
           }
           
-          const formattedPrice = planPrice.toLocaleString('fa-IR');
-          
-          const factor = `💳 <b>فاکتور سرویس ${planDaysLabel(state.days)} (${state.type})</b>\n💵 مبلغ سرویس: <b>${formattedPrice} تومان</b>${multiUserMessage}\n\nلطفاً مبلغ فوق را به شماره کارت زیر واریز کرده و <b>عکس رسید تراکنش</b> را همینجا ارسال کنید:\n\n💳 <code>${CARD_NUMBER}</code>\n\n⏱ <i>شما ۱۰ دقیقه برای ارسال رسید فرصت دارید. (تا زمان تایید ادمین، امکان ارسال مجدد و ویرایش عکس فیش وجود دارد)</i>`;
+          const factor = `💳 <b>فاکتور سرویس ${planDaysLabel(state.days)} (${state.type})</b>\n💵 مبلغ قابل پرداخت: <b>${planPrice.toLocaleString('fa-IR')} تومان</b>${multiUserMessage}\n\nلطفاً مبلغ فوق را واریز کرده و <b>عکس رسید تراکنش</b> را همینجا ارسال کنید:\n\n💳 <code>${CARD_NUMBER}</code>\n\n⏱ <i>شما ۱۰ دقیقه فرصت دارید.</i>`;
           await callTelegram('deleteMessage', { chat_id, message_id: msg_id });
           await sendMessage(chat_id, factor, backAndSupportKeyboard());
+          return new Response('OK');
         }
 
         else if (data.startsWith('admrej_')) {
@@ -1890,5 +2145,37 @@ export default {
     }
 
     return new Response('OK', { status: 200 });
+  }, // <--- این کاما حتماً باید اضافه شود
+
+  // ================= هندلر زمان‌بندی شده (بررسی روزانه انقضا) =================
+  async scheduled(event, env, ctx) {
+    try {
+      loadConfig(env);
+      const db = env.DB;
+      const now = new Date();
+      
+      const { results: activeServices } = await db.prepare("SELECT * FROM services WHERE status = 'ACTIVE'").all();
+      if (!activeServices || activeServices.length === 0) return;
+
+      for (const srv of activeServices) {
+        if (srv.exp_date) {
+          const expDate = new Date(srv.exp_date);
+          const diffMs = expDate.getTime() - now.getTime();
+          const hoursLeft = Math.floor(diffMs / (1000 * 60 * 60));
+
+          if (hoursLeft > 0 && hoursLeft <= 24) {
+            const reminderMsg = `⚠️ <b>یادآوری اتمام اشتراک</b>\n\nکاربر گرامی، سرویس شما با شناسه <b>#${srv.id}</b> کمتر از <b>${hoursLeft} ساعت دیگر</b> منقضی می‌شود.\n\nجهت جلوگیری از قطع شدن اتصال، لطفاً نسبت به تمدید سرویس خود اقدام نمایید.`;
+            
+            await callTelegram('sendMessage', { 
+              chat_id: srv.user_id, 
+              text: reminderMsg, 
+              parse_mode: "HTML"
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.log("Cron Error:", e.message);
+    }
   }
 };
