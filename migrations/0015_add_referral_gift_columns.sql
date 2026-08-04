@@ -1,0 +1,2 @@
+ALTER TABLE referrals ADD COLUMN gift_applied INTEGER DEFAULT 0;
+ALTER TABLE referrals ADD COLUMN gift_days INTEGER DEFAULT 0;
