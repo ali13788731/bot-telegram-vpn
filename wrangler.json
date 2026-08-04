@@ -9,5 +9,8 @@
       "database_name": "vpn_bot_db",
       "database_id": "a8e35e75-674a-4b45-8dd7-297035e5b193"
     }
-  ]
+  ],
+  "triggers": {
+    "crons": ["0 8 * * *"]
+  }
 }
