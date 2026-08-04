@@ -283,14 +283,23 @@ async function updateCloudflareExp(domain, daysToAdd, hoursToAdd = 0, singleUser
 }
 
 // ================= کیبوردها =================
-function mainMenu(user_id) {
+async function mainMenu(db, user_id) {
   // پنل خرید فقط مخصوص کاربران عادی است؛ ادمین اصلاً این منو را نمی‌بیند.
+  // دکمه «دعوت دوستان» فقط زمانی نمایش داده می‌شود که کاربر حداقل یک سرویس با ورکر ثبت‌شده داشته باشد.
+  const hasWorker = await db.prepare("SELECT 1 FROM services WHERE user_id = ? AND cf_domain IS NOT NULL AND cf_domain != '' LIMIT 1").bind(user_id).first();
+
   const keyboard = [
     [{ text: "🎁 دریافت اکانت رایگان (تست)" }, { text: "🛒 خرید سرویس" }],
-    [{ text: "📚 آموزش‌ها" }, { text: "📦 سرویس‌های من" }],
-    [{ text: "🤝 دعوت دوستان (هدیه ۵ روزه)" }, { text: "👤 وضعیت من" }],
-    [{ text: "📞 ارتباط با پشتیبانی" }]
+    [{ text: "📚 آموزش‌ها" }, { text: "📦 سرویس‌های من" }]
   ];
+
+  if (hasWorker) {
+    keyboard.push([{ text: "🤝 دعوت دوستان (هدیه ۵ روزه)" }, { text: "👤 وضعیت من" }]);
+  } else {
+    keyboard.push([{ text: "👤 وضعیت من" }]);
+  }
+
+  keyboard.push([{ text: "📞 ارتباط با پشتیبانی" }]);
   return { keyboard, resize_keyboard: true };
 }
 
@@ -491,7 +500,7 @@ export default {
           }
 
           const welcome = `👋 <b>به ربات هوشمند ما خوش آمدید!</b>\n\n💡 <b>هدیه ویژه ما:</b> کاربران جدید برای بار اول یک اکانت <b>تست ۲ روزه (تک‌کاربره)</b> رایگان دریافت می‌کنند. همچنین تمامی کاربران می‌توانند <b>هر ماه یکبار، یک اکانت رایگان ۱ روزه</b> دریافت کنند!\n\nپایداری، سرعت و امنیت را با ما تجربه کنید. لطفاً از منوی زیر یک گزینه را انتخاب کنید 👇`;
-          await sendMessage(chat_id, welcome, mainMenu(user_id));
+          await sendMessage(chat_id, welcome, await mainMenu(db, user_id));
           return new Response('OK');
         }
 
@@ -505,7 +514,7 @@ export default {
             const cUserLink = getUserLink(state.target_user, cUrow ? cUrow.first_name : "کاربر", cUrow ? cUrow.username : "");
             cancelledUserInfo = `\n\n👤 <b>کاربری که درخواستش لغو شد:</b> ${cUserLink}\n🆔 <b>آیدی:</b> <code>${state.target_user}</code>`;
             await clearState(db, state.target_user);
-            await sendMessage(state.target_user, "❌ فرآیند صدور سرویس توسط پشتیبانی لغو شد. می‌توانید مجدداً درخواست دهید.", mainMenu(state.target_user));
+            await sendMessage(state.target_user, "❌ فرآیند صدور سرویس توسط پشتیبانی لغو شد. می‌توانید مجدداً درخواست دهید.", await mainMenu(db, state.target_user));
           }
           await clearState(db, ADMIN_ID);
           const retryKb = state.target_user ? { inline_keyboard: [[{ text: "🔄 تلاش مجدد برای همین کاربر (ثبت ورکر جدید)", callback_data: `admretrydomain_${state.target_user}_${state.days}_${state.hours}_${state.action}_${state.user_type}` }]] } : null;
@@ -526,7 +535,7 @@ export default {
                  }
              }
              await clearState(db, user_id);
-             await sendMessage(chat_id, "✅ عملیات با موفقیت لغو شد و به منوی اصلی بازگشتید.", mainMenu(user_id));
+             await sendMessage(chat_id, "✅ عملیات با موفقیت لغو شد و به منوی اصلی بازگشتید.", await mainMenu(db, user_id));
           } else if (!msg.photo) {
              await sendMessage(chat_id, "⏳ <b>شما یک درخواست در حال بررسی دارید!</b>\nمی‌توانید عکس فیش جدید را جهت ویرایش بفرستید یا دکمه «❌ لغو عملیات» را بزنید.", pendingMenu());
           }
@@ -545,10 +554,10 @@ export default {
             menu = adminPanelMenu();
             replyMsg = "👨‍💻 به پنل مدیریت برگشتید.";
           } else if (text === "🏠 بازگشت به منوی اصلی") {
-            menu = mainMenu(user_id);
+            menu = await mainMenu(db, user_id);
             replyMsg = "🏠 به منوی اصلی برگشتید.";
           } else {
-            menu = mainMenu(user_id);
+            menu = await mainMenu(db, user_id);
           }
           
           await sendMessage(chat_id, replyMsg, menu);
@@ -1054,6 +1063,13 @@ export default {
 		
 		// ================= دریافت لینک معرفی دوستان =================
         if (text === "🤝 دعوت دوستان (هدیه ۵ روزه)" && user_id !== ADMIN_ID) {
+          // این قابلیت فقط برای کاربرانی که حداقل یک ورکر ثبت‌شده دارند فعال است
+          const hasWorkerForRef = await db.prepare("SELECT 1 FROM services WHERE user_id = ? AND cf_domain IS NOT NULL AND cf_domain != '' LIMIT 1").bind(user_id).first();
+          if (!hasWorkerForRef) {
+            await sendMessage(chat_id, "⚠️ برای استفاده از سیستم دعوت دوستان، ابتدا باید حداقل یک سرویس با ورکر ثبت‌شده داشته باشید.", await mainMenu(db, user_id));
+            return new Response('OK');
+          }
+
           // دریافت اطلاعات ربات برای ساخت لینک دعوت
           const botInfo = await callTelegram('getMe');
           let botUsername = "YOUR_BOT_USERNAME"; // نام کاربری پیش‌فرض در صورت خطا
@@ -1138,7 +1154,7 @@ export default {
 
           if (Date.now() - state.timer_start > 600000) {
             await clearState(db, user_id);
-            await sendMessage(user_id, "❌ زمان ۱۰ دقیقه‌ای شما برای پرداخت به پایان رسیده است. لطفاً فرآیند را مجدداً آغاز کنید.", mainMenu(user_id));
+            await sendMessage(user_id, "❌ زمان ۱۰ دقیقه‌ای شما برای پرداخت به پایان رسیده است. لطفاً فرآیند را مجدداً آغاز کنید.", await mainMenu(db, user_id));
             return new Response('OK');
           }
 
@@ -1221,7 +1237,7 @@ export default {
 
             const userCaption = `✅ <b>سرویس اختصاصی شما آماده و فعال شد!</b>\n\n👤 <b>کاربر:</b> ${userLink}\n🆔 <b>آیدی:</b> <code>${state.target_user}</code>\n📦 <b>بسته:</b> ${planName}\n📅 <b>تاریخ ثبت:</b> ${shamsiNow}\n\n🔗 <b>لینک اتصال سابسکریپشن:</b>\n<code>${cfRes.subLink}</code>\n\n💡 <i>از دکمه‌های زیر برای افزودن سریع به برنامه استفاده کنید یا بارکد را اسکن نمایید.</i>`;
             await callTelegram('sendPhoto', { chat_id: state.target_user, photo: getQRUrl(cfRes.subLink), caption: userCaption, parse_mode: 'HTML', reply_markup: getImportKeyboard(cfRes.subLink, botOrigin) });
-            await sendMessage(state.target_user, "✅ درخواست شما تایید و اعمال شد. به منوی اصلی بازگشتید.", mainMenu(state.target_user));
+            await sendMessage(state.target_user, "✅ درخواست شما تایید و اعمال شد. به منوی اصلی بازگشتید.", await mainMenu(db, state.target_user));
 
             const adminCaption = `✅ <b>تحویل سرویس به کاربر با موفقیت انجام شد.</b>\n\n👤 <b>کاربر:</b> ${userLink}\n🆔 <b>آیدی:</b> <code>${state.target_user}</code>\n📦 <b>بسته:</b> ${planName}\n🔗 <b>لینک اتصال:</b>\n<code>${cfRes.subLink}</code>`;
             await callTelegram('sendPhoto', { chat_id: ADMIN_ID, photo: getQRUrl(cfRes.subLink), caption: adminCaption, parse_mode: 'HTML' });
@@ -1821,7 +1837,7 @@ export default {
           
           if (adminState && adminState.target_user) {
               await clearState(db, adminState.target_user);
-              await sendMessage(adminState.target_user, "❌ فرآیند صدور سرویس توسط پشتیبانی لغو شد. می‌توانید مجدداً درخواست دهید.", mainMenu(adminState.target_user));
+              await sendMessage(adminState.target_user, "❌ فرآیند صدور سرویس توسط پشتیبانی لغو شد. می‌توانید مجدداً درخواست دهید.", await mainMenu(db, adminState.target_user));
           }
           await clearState(db, ADMIN_ID);
           await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: "✅ عملیات ادمین با موفقیت لغو شد و کاربر از وضعیت انتظار خارج گردید.", parse_mode: "HTML" });
@@ -2012,7 +2028,7 @@ export default {
              await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: "❌ <b>توسط شما رد شد.</b>", parse_mode: "HTML" });
           }
           await clearState(db, targetUser);
-          await sendMessage(targetUser, "❌ متاسفانه درخواست / رسید پرداختی شما توسط بخش پشتیبانی رد شد. در صورت بروز مشکل با ادمین در ارتباط باشید.", mainMenu(targetUser));
+          await sendMessage(targetUser, "❌ متاسفانه درخواست / رسید پرداختی شما توسط بخش پشتیبانی رد شد. در صورت بروز مشکل با ادمین در ارتباط باشید.", await mainMenu(db, targetUser));
         }
 
         // ================= شروع مجدد سریع ثبت ورکر پس از لغو خودکار =================
@@ -2109,7 +2125,7 @@ export default {
 
                   const userCaption = `✅ <b>سرویس اختصاصی شما با موفقیت شارژ/فعال شد!</b>\n\n👤 <b>کاربر:</b> ${userLink}\n🆔 <b>آیدی:</b> <code>${targetUser}</code>\n📦 <b>بسته خریداری شده:</b> ${planName}\n📅 <b>تاریخ ثبت:</b> ${shamsiNow}\n\n🔗 <b>لینک اتصال سابسکریپشن:</b>\n<code>${cfRes.subLink}</code>\n\n💡 <i>از دکمه‌های زیر برای افزودن سریع به برنامه استفاده کنید یا بارکد را اسکن نمایید.</i>`;
                   await callTelegram('sendPhoto', { chat_id: targetUser, photo: getQRUrl(cfRes.subLink), caption: userCaption, parse_mode: 'HTML', reply_markup: getImportKeyboard(cfRes.subLink, botOrigin) });
-                  await sendMessage(targetUser, "✅ عملیات با موفقیت انجام شد و به منوی اصلی بازگشتید.", mainMenu(targetUser));
+                  await sendMessage(targetUser, "✅ عملیات با موفقیت انجام شد و به منوی اصلی بازگشتید.", await mainMenu(db, targetUser));
                   
                   const adminCaption = `✅ <b>شارژ خودکار اکانت با موفقیت انجام شد!</b>\n\n👤 <b>کاربر:</b> ${userLink}\n🆔 <b>آیدی:</b> <code>${targetUser}</code>\n📦 <b>بسته:</b> ${planName}\n🔗 <b>لینک اتصال:</b>\n<code>${cfRes.subLink}</code>`;
                   await callTelegram('sendPhoto', { chat_id: ADMIN_ID, photo: getQRUrl(cfRes.subLink), caption: adminCaption, parse_mode: 'HTML' });
