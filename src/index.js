@@ -484,7 +484,9 @@ export default {
                   const cfRes = await updateCloudflareExp(refActiveSrv.cf_domain, 5, 0, refActiveSrv.plan_type.includes('یک کاربره'), referrerId, db);
                   if (cfRes.success) {
                     await db.prepare("UPDATE services SET exp_date = ? WHERE id = ?").bind(cfRes.newExpDate, refActiveSrv.id).run();
-                    await sendMessage(referrerId, `🎉 <b>مژده!</b>\n\nیک کاربر جدید با لینک دعوت شما وارد ربات شد.\n🎁 <b>۵ روز هدیه</b> به اعتبار سرویس شما (شناسه #${refActiveSrv.id}) اضافه شد!`);
+                    await db.prepare("UPDATE referrals SET gift_applied = 1, gift_days = 5 WHERE referrer_id = ? AND referred_id = ?").bind(referrerId, user_id).run();
+                    const newInviteeName = escapeHtml(first_name);
+                    await sendMessage(referrerId, `🎉 <b>مژده!</b>\n\nکاربر ${newInviteeName} با لینک دعوت شما وارد ربات شد.\n🎁 <b>۵ روز هدیه</b> به اعتبار سرویس شما (شناسه #${refActiveSrv.id}) اضافه شد!\n\nبرای دیدن لیست کامل افرادی که دعوت کرده‌اید، وارد بخش «🤝 دعوت دوستان» شوید.`);
                   }
                 } else {
                   await sendMessage(referrerId, `🎉 <b>مژده!</b>\n\nیک کاربر جدید با لینک دعوت شما عضو شد.\n⚠️ <i>توجه: از آنجایی که شما در حال حاضر سرویس فعالی ندارید، امکان اضافه کردن هدیه ۵ روزه به سرویس شما وجود نداشت. (هدیه فقط روی سرویس‌های فعال اعمال می‌شود).</i>`);
@@ -722,6 +724,8 @@ export default {
 
           const uRow = foundUsers[0];
           const userLink = getUserLink(targetUid, uRow.first_name, uRow.username);
+          const refCountRow = await db.prepare("SELECT COUNT(*) as cnt FROM referrals WHERE referrer_id = ?").bind(targetUid).first();
+          const referralCount = refCountRow ? refCountRow.cnt : 0;
           
           const workerData = await getWorkerStatus(targetSrv.cf_domain);
           const isKsActive = workerData.killSwitch === true;
@@ -745,7 +749,9 @@ export default {
 
           let mainMsg = `🛠 <b>مدیریت کاربر:</b> ${userLink}\n`;
           mainMsg += `🆔 آیدی: <code>${targetUid}</code>\n`;
-          mainMsg += `تعداد سرویس‌ها: ${srvList.length}\n\n`;
+          mainMsg += `تعداد سرویس‌ها: ${srvList.length}\n`;
+
+          mainMsg += `🤝 تعداد دعوت‌شدگان: ${referralCount} نفر\n\n`;
           
           mainMsg += `🌐 <b>آدرس ورکر:</b>\n<code>${pureWorkerUrl}/</code>\n\n`;
           mainMsg += `📊 <b>لینک پنل معمولی:</b>\n<code>${pureWorkerUrl}/login</code>\n\n`;
@@ -1082,6 +1088,40 @@ export default {
           const msg = `🎁 <b>سیستم معرفی دوستان (کسب هدیه)</b>\n\nبا دعوت از دوستان خود به این ربات، به ازای هر نفری که عضو شود، <b>۵ روز سرویس رایگان</b> هدیه بگیرید!\n\n📌 <b>قوانین:</b>\n۱. شخصی که دعوت می‌کنید نباید قبلاً عضو ربات بوده باشد.\n۲. هدیه ۵ روزه به صورت خودکار به <b>آخرین سرویس فعال شما</b> اضافه می‌شود.\n۳. محدودیتی در تعداد دعوت‌ها وجود ندارد!\n\n🔗 <b>لینک اختصاصی دعوت شما:</b>\n<code>${refLink}</code>\n\nهمین الان این پیام را برای دوستانتان فوروارد کنید! 🚀`;
           
           await sendMessage(chat_id, msg);
+
+          // ================= نمایش لیست افرادی که این کاربر دعوت کرده =================
+          const { results: myInvitees } = await db.prepare(`
+            SELECT r.referred_id, r.created_at, r.gift_applied, u.first_name, u.username
+            FROM referrals r
+            LEFT JOIN users u ON r.referred_id = u.user_id
+            WHERE r.referrer_id = ?
+            ORDER BY r.id DESC
+          `).bind(user_id).all();
+
+          if (!myInvitees || myInvitees.length === 0) {
+            await sendMessage(chat_id, `👥 <b>لیست دعوت‌شدگان شما</b>\n\nشما تاکنون هیچ کاربری را با لینک خود دعوت نکرده‌اید.`);
+          } else {
+            const appliedCount = myInvitees.filter(i => i.gift_applied === 1).length;
+            const totalGiftDays = appliedCount * 5;
+
+            let inviteesMsg = `👥 <b>لیست دعوت‌شدگان شما</b>\n\n`;
+            inviteesMsg += `📊 <b>تعداد کل دعوت‌ها:</b> ${myInvitees.length} نفر\n`;
+            inviteesMsg += `🎁 <b>مجموع روزهای هدیه دریافتی:</b> ${totalGiftDays} روز\n\n`;
+
+            const showList = myInvitees.slice(0, 30);
+            showList.forEach((inv, idx) => {
+              const displayName = escapeHtml(inv.first_name || 'کاربر');
+              const usernamePart = inv.username ? ` (@${inv.username})` : '';
+              const giftStatus = inv.gift_applied === 1 ? '🎁 هدیه اعمال شد' : '⏳ هدیه اعمال نشد';
+              inviteesMsg += `${idx + 1}. ${displayName}${usernamePart} — ${giftStatus}\n`;
+            });
+
+            if (myInvitees.length > showList.length) {
+              inviteesMsg += `\n... و ${myInvitees.length - showList.length} نفر دیگر`;
+            }
+
+            await sendMessage(chat_id, inviteesMsg);
+          }
           return new Response('OK');
         }		
 		
@@ -1775,6 +1815,8 @@ export default {
           await setState(db, ADMIN_ID, { step: 'MANAGE_FIXED_ACTIONS', service_id: targetSrv.id });
 
           const userLink = getUserLink(targetUid, uRow ? uRow.first_name : "کاربر", uRow ? uRow.username : "");
+          const refCountRow2 = await db.prepare("SELECT COUNT(*) as cnt FROM referrals WHERE referrer_id = ?").bind(targetUid).first();
+          const referralCount2 = refCountRow2 ? refCountRow2.cnt : 0;
           const workerData = await getWorkerStatus(targetSrv.cf_domain);
           const isKsActive = workerData.killSwitch === true;
           const isSingle = targetSrv.plan_type.includes('یک کاربره');
@@ -1797,7 +1839,9 @@ export default {
 
           let mainMsg = `🛠 <b>مدیریت کاربر:</b> ${userLink}\n`;
           mainMsg += `🆔 آیدی: <code>${targetUid}</code>\n`;
-          mainMsg += `تعداد سرویس‌ها: ${srvList.length}\n\n`;
+          mainMsg += `تعداد سرویس‌ها: ${srvList.length}\n`;
+
+          mainMsg += `🤝 تعداد دعوت‌شدگان: ${referralCount2} نفر\n\n`;
           
           mainMsg += `🌐 <b>آدرس ورکر:</b>\n<code>${pureWorkerUrl}/</code>\n\n`;
           mainMsg += `📊 <b>لینک پنل معمولی:</b>\n<code>${pureWorkerUrl}/login</code>\n\n`;
