@@ -32,3 +32,21 @@ CREATE TABLE IF NOT EXISTS user_states (
     state_data TEXT, 
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- جدول مدیریت کدهای تخفیف
+CREATE TABLE IF NOT EXISTS discounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT UNIQUE,
+    percent INTEGER,
+    max_uses INTEGER,
+    used_count INTEGER DEFAULT 0,
+    expire_date_shamsi TEXT
+);
+
+-- جدول ثبت دعوت دوستان (رفرال)
+CREATE TABLE IF NOT EXISTS referrals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    referrer_id INTEGER,
+    referred_id INTEGER UNIQUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
