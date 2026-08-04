@@ -1,12 +1,30 @@
 // ================= تنظیمات اصلی =================
-const TOKEN = '8452962087:AAH-WX6MIxTuBNj0YS6YkrwhMjlavT-9uaU';
-const ADMIN_ID = 8081586840;
-const CARD_NUMBER = "6037-9973-7667-2938 بنام علی فرجی";
-const SUPPORT_ID = "@mrpcdesigner";
+// 🔒 هیچ مقدار حساسی اینجا هاردکد نشده؛ همه از env (Cloudflare Secrets) خوانده می‌شوند.
+// این متغیرها در ابتدای هر fetch() توسط loadConfig(env) مقداردهی می‌شوند.
+let TOKEN, ADMIN_ID, CARD_NUMBER, SUPPORT_ID, CF_ADMIN_PATH, CF_ADMIN_TOKEN, WEBHOOK_SECRET;
 const PIC_UPDATE_SUB = "https://example.com/update_sub_tutorial.jpg";
 const PIC_V2BOX_SETUP = "https://example.com/v2box_setup_tutorial.jpg";
-const CF_ADMIN_PATH = "my-secret-admin-9988";
-const CF_ADMIN_TOKEN = "admin12345";
+
+function loadConfig(env) {
+  TOKEN = env.BOT_TOKEN;
+  ADMIN_ID = Number(env.ADMIN_ID);
+  CARD_NUMBER = env.CARD_NUMBER;
+  SUPPORT_ID = env.SUPPORT_ID;
+  CF_ADMIN_PATH = env.CF_ADMIN_PATH;
+  CF_ADMIN_TOKEN = env.CF_ADMIN_TOKEN;
+  WEBHOOK_SECRET = env.WEBHOOK_SECRET;
+
+  const missing = ['BOT_TOKEN', 'ADMIN_ID', 'CARD_NUMBER', 'SUPPORT_ID', 'CF_ADMIN_PATH', 'CF_ADMIN_TOKEN', 'WEBHOOK_SECRET']
+    .filter(k => !env[k]);
+  if (missing.length) {
+    throw new Error(`متغیرهای محیطی زیر تنظیم نشده‌اند: ${missing.join(', ')}`);
+  }
+}
+
+// جلوگیری از HTML injection وقتی متن آزاد کاربر داخل پیام parse_mode=HTML قرار می‌گیرد
+function escapeHtml(str) {
+  return String(str ?? "").replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch]));
+}
 
 // قیمت‌گذاری پلن‌ها (به تومان)
 const PLAN_PRICES = {
@@ -358,6 +376,13 @@ function daysKeyboard() {
 // ================= هندلر اصلی کلودفلر ورکر =================
 export default {
   async fetch(request, env, ctx) {
+    try {
+      loadConfig(env);
+    } catch (e) {
+      console.log("Config error:", e.message);
+      return new Response('Server misconfigured', { status: 500 });
+    }
+
     const requestUrl = new URL(request.url);
     const botOrigin = requestUrl.origin;
 
@@ -397,7 +422,15 @@ export default {
     if (request.method !== 'POST') {
       return new Response('Method Not Allowed', { status: 405 });
     }
-    
+
+    // 🔒 حیاتی‌ترین لایه امنیتی: تأیید اینکه این درخواست واقعاً از تلگرام آمده، نه یک آدرس جعلی.
+    // بدون این بررسی، هر کسی که آدرس ورکر را حدس بزند می‌تواند با ساختن یک بدنه JSON دلخواه
+    // و گذاشتن from.id برابر ADMIN_ID، خودش را جای ادمین جا بزند (پاک‌کردن دیتابیس، صدور سرویس و ...).
+    const secretHeader = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
+    if (secretHeader !== WEBHOOK_SECRET) {
+      return new Response('Unauthorized', { status: 401 });
+    }
+
     const db = env.DB;
     const update = await request.json();
 
@@ -847,7 +880,7 @@ export default {
           const { results: srvList } = await db.prepare("SELECT * FROM services WHERE user_id = ? ORDER BY id DESC").bind(user_id).all();
           
           let msg = `👤 <b>وضعیت من</b>\n\n`;
-          msg += `📝 <b>نام ثبت شده:</b> ${uRow && uRow.first_name ? uRow.first_name : first_name}\n`;
+          msg += `📝 <b>نام ثبت شده:</b> ${escapeHtml(uRow && uRow.first_name ? uRow.first_name : first_name)}\n`;
           msg += `🆔 <b>آیدی عددی:</b> <code>${user_id}</code>\n`;
           msg += `🌐 <b>یوزرنیم:</b> ${uRow && uRow.username ? '@' + uRow.username : (username ? '@' + username : 'ندارد')}\n\n`;
           
@@ -1287,7 +1320,7 @@ export default {
               [{ text: "❌ لغو و انصراف", callback_data: "cancel_send_msg" }]
             ]
           };
-          await sendMessage(chat_id, `💬 <b>ارسال پیام شخصی به پشتیبانی:</b>\n\nشما متن زیر را تایپ کرده‌اید:\n\n<i>"${text}"</i>\n\nآیا می‌خواهید این پیام برای ادمین/پشتیبانی ارسال شود؟`, confirmKb);
+          await sendMessage(chat_id, `💬 <b>ارسال پیام شخصی به پشتیبانی:</b>\n\nشما متن زیر را تایپ کرده‌اید:\n\n<i>"${escapeHtml(text)}"</i>\n\nآیا می‌خواهید این پیام برای ادمین/پشتیبانی ارسال شود؟`, confirmKb);
           return new Response('OK');
         }
       }
@@ -1317,7 +1350,7 @@ export default {
             const uRow = await db.prepare("SELECT first_name, username FROM users WHERE user_id = ?").bind(user_id).first();
             const userLink = getUserLink(user_id, uRow ? uRow.first_name : "کاربر", uRow ? uRow.username : "");
             
-            const admText = `📩 <b>پیام شخصی جدید از کاربر:</b>\n\n👤 <b>کاربر:</b> ${userLink}\n🆔 <b>آیدی:</b> <code>${user_id}</code>\n\n💬 <b>متن پیام:</b>\n${state.message_text}`;
+            const admText = `📩 <b>پیام شخصی جدید از کاربر:</b>\n\n👤 <b>کاربر:</b> ${userLink}\n🆔 <b>آیدی:</b> <code>${user_id}</code>\n\n💬 <b>متن پیام:</b>\n${escapeHtml(state.message_text)}`;
             const admKb = { inline_keyboard: [[{ text: "💬 پاسخ به این پیام", callback_data: `admreply_${user_id}` }]] };
             
             await sendMessage(ADMIN_ID, admText, admKb);
