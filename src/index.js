@@ -1897,6 +1897,8 @@ export default {
             await db.prepare("DELETE FROM users").run();
             await db.prepare("DELETE FROM user_states").run();
             await db.prepare("DELETE FROM admin_domains").run();
+            await db.prepare("DELETE FROM referrals").run();
+            await db.prepare("DELETE FROM discounts").run();
             await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: "✅ دیتابیس با موفقیت به‌طور کامل پاک شد.", parse_mode: "HTML" });
           } catch (e) {
             await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `❌ خطا در پاک کردن دیتابیس:\n<code>${e.message}</code>`, parse_mode: "HTML" });
