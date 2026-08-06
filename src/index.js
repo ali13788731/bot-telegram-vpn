@@ -1,6 +1,6 @@
 // ================= تنظیمات اصلی =================
 // 🔒 هیچ مقدار حساسی اینجا هاردکد نشده؛ همه از env (Cloudflare Secrets) خوانده می‌شوند.
-// این متغیرها در ابتدای هر fetch() توسط loadConfig(env) مقداردهی می‌شوند.
+// این متغیرها در ابتدای هر fetch() توسط loadConfig(env) مقداردهی می‌شوند. 
 let TOKEN, ADMIN_ID, CARD_NUMBER, SUPPORT_ID, CF_ADMIN_PATH, CF_ADMIN_TOKEN, WEBHOOK_SECRET;
 
 function loadConfig(env) {
