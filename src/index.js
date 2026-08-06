@@ -1,6 +1,6 @@
 // ================= تنظیمات اصلی =================
 // 🔒 هیچ مقدار حساسی اینجا هاردکد نشده؛ همه از env (Cloudflare Secrets) خوانده می‌شوند.
-// این متغیرها در ابتدای هر fetch() توسط loadConfig(env) مقداردهی می‌شوند. 
+// این متغیرها در ابتدای هر fetch() توسط loadConfig(env) مقداردهی می‌شوند.
 let TOKEN, ADMIN_ID, CARD_NUMBER, SUPPORT_ID, CF_ADMIN_PATH, CF_ADMIN_TOKEN, WEBHOOK_SECRET;
 
 function loadConfig(env) {
@@ -24,67 +24,104 @@ function escapeHtml(str) {
   return String(str ?? "").replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch]));
 }
 
-// ================= مدیریت پلن‌های اشتراک (کاملاً داینامیک - از جدول plans در دیتابیس خوانده می‌شود) =================
-// پلن‌ها دیگر در کد هاردکد نیستند؛ ادمین از داخل ربات (تنظیمات ربات ← مدیریت پلن‌های اشتراک)
-// می‌تواند پلن جدید بسازد، نام دکمه/مدت/قیمت تک‌کاربره/قیمت چندکاربره/تاریخ انقضای پیشنهاد را ویرایش کند
-// و پلن را به‌جای حذف، غیرفعال یا دوباره فعال کند.
+// ================= تنظیمات پویا (جشنواره / اکانت تست / پلن‌های اشتراک) =================
+// این تنظیمات در جدول bot_settings دیتابیس ذخیره می‌شوند و از پنل «⚙️ تنظیمات ربات» توسط ادمین قابل ویرایش هستند.
+const DEFAULT_SETTINGS = {
+  freeAccount: {
+    // اگر جشنواره فعال باشد همیشه در اولویت است و اکانت تست به‌طور خودکار غیرفعال می‌شود
+    test: {
+      enabled: true,
+      buttonText: "🎁 دریافت اکانت رایگان (تست)",
+      messageText: "🎁 اکانت تست رایگان شما در حال آماده‌سازی است...",
+      days: 1,
+      cooldownDays: 30,
+      userType: "single" // single | multi
+    },
+    festival: {
+      enabled: false,
+      buttonText: "🎉 جشنواره ویژه (اکانت رایگان)",
+      messageText: "🎉 به مناسبت جشنواره ویژه، یک هفته اشتراک رایگان به شما تعلق گرفت!",
+      days: 7,
+      userType: "single", // single | multi
+      enabledAt: null // زمان روشن شدن آخرین دور جشنواره؛ برای جلوگیری از دریافت مکرر در همان دوره استفاده می‌شود
+    }
+  },
+  plans: [
+    { days: 1,  price: 10000,  priceMultiExtra: 20000, text: "۱ روزه نامحدود",         enabled: true, userTypeMode: "both" },
+    { days: 5,  price: 30000,  priceMultiExtra: 20000, text: "۵ روزه نامحدود",         enabled: true, userTypeMode: "both" },
+    { days: 10, price: 45000,  priceMultiExtra: 20000, text: "۱۰ روزه نامحدود",        enabled: true, userTypeMode: "both" },
+    { days: 30, price: 100000, priceMultiExtra: 20000, text: "۳۰ روزه نامحدود",        enabled: true, userTypeMode: "both" },
+    { days: 60, price: 180000, priceMultiExtra: 20000, text: "۶۰ روزه ویژه نامحدود",   enabled: true, userTypeMode: "both" }
+  ]
+};
 
-// فقط پلن‌های فعال و هنوز منقضی‌نشده (برای نمایش در لیست خرید)
-async function getActivePlans(db) {
-  const nowShamsi = getShamsiNow().split(/[ ,-]/)[0];
-  const { results } = await db.prepare(
-    "SELECT * FROM plans WHERE is_active = 1 AND (expire_date_shamsi IS NULL OR expire_date_shamsi = '' OR expire_date_shamsi >= ?) ORDER BY sort_order ASC, days ASC"
-  ).bind(nowShamsi).all();
-  return results || [];
+let SETTINGS = null; // در ابتدای هر fetch() توسط loadSettings(db) پر می‌شود
+
+function cloneDefaultSettings() {
+  return JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
 }
 
-// همه پلن‌ها (فعال و غیرفعال) برای پنل مدیریت
-async function getAllPlans(db) {
-  const { results } = await db.prepare("SELECT * FROM plans ORDER BY sort_order ASC, days ASC").all();
-  return results || [];
+function mergeSettings(saved) {
+  const base = cloneDefaultSettings();
+  if (!saved) return base;
+  if (saved.freeAccount) {
+    if (saved.freeAccount.test) base.freeAccount.test = { ...base.freeAccount.test, ...saved.freeAccount.test };
+    if (saved.freeAccount.festival) base.freeAccount.festival = { ...base.freeAccount.festival, ...saved.freeAccount.festival };
+  }
+  if (Array.isArray(saved.plans)) {
+    base.plans = base.plans.map(defPlan => {
+      const savedPlan = saved.plans.find(p => String(p.days) === String(defPlan.days));
+      return savedPlan ? { ...defPlan, ...savedPlan } : defPlan;
+    });
+    saved.plans.forEach(p => {
+      if (!base.plans.find(bp => String(bp.days) === String(p.days))) base.plans.push(p);
+    });
+  }
+  return base;
 }
 
-async function getPlanById(db, id) {
-  return await db.prepare("SELECT * FROM plans WHERE id = ?").bind(id).first();
+async function loadSettings(db) {
+  try {
+    const row = await db.prepare("SELECT value FROM bot_settings WHERE key = 'config'").first();
+    SETTINGS = mergeSettings(row ? JSON.parse(row.value) : null);
+  } catch (e) {
+    console.log("Settings Load Error:", e.message);
+    SETTINGS = cloneDefaultSettings();
+  }
 }
 
-// برای نمایش تقریبیِ قیمت سرویس‌هایی که قبلاً ثبت شده‌اند (گزارش فروش و لیست سرویس‌های کاربر)
-// چون این سرویس‌ها فقط plan_days را ذخیره کرده‌اند، جدیدترین پلن با همان مدت را به‌عنوان مرجع قیمت برمی‌گردانیم.
-async function getPlanPriceByDays(db, days, isSingle) {
-  const plan = await db.prepare("SELECT price_single, price_multi FROM plans WHERE days = ? ORDER BY is_active DESC, id DESC LIMIT 1").bind(days).first();
+async function saveSettings(db) {
+  await db.prepare("INSERT INTO bot_settings (key, value) VALUES ('config', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .bind(JSON.stringify(SETTINGS)).run();
+}
+
+// جشنواره همیشه اولویت دارد و در صورت روشن بودن، اکانت تست به‌طور خودکار در دسترس کاربران نخواهد بود
+function getActiveFreeAccount() {
+  if (SETTINGS.freeAccount.festival.enabled) {
+    return { mode: "festival", cfg: SETTINGS.freeAccount.festival };
+  }
+  if (SETTINGS.freeAccount.test.enabled) {
+    return { mode: "test", cfg: SETTINGS.freeAccount.test };
+  }
+  return null;
+}
+
+function getPlan(days) {
+  return SETTINGS.plans.find(p => String(p.days) === String(days));
+}
+
+function getPlanPrice(days, isSingle) {
+  const plan = getPlan(days);
   if (!plan) return 0;
-  return isSingle ? (plan.price_single || 0) : (plan.price_multi || 0);
+  let price = plan.price;
+  if (!isSingle) price += (plan.priceMultiExtra || 0);
+  return price;
 }
 
-// نسخه دسته‌ای getPlanPriceByDays برای استفاده داخل حلقه‌های sync (forEach) بدون نیاز به await در هر تکرار
-async function buildDaysPriceMap(db) {
-  const { results } = await db.prepare("SELECT days, price_single, price_multi FROM plans ORDER BY id ASC").all();
-  const map = new Map();
-  (results || []).forEach(p => map.set(p.days, { single: p.price_single || 0, multi: p.price_multi || 0 }));
-  return map;
-}
-
-// ================= مدیریت کمپین‌های اکانت رایگان/تست (کاملاً داینامیک - از جدول test_plans در دیتابیس خوانده می‌شود) =================
-// می‌تواند همزمان چند کمپین مستقل داشته باشد (مثلاً هم «اکانت تست» عادی، هم یک کمپین جداگانه «جشنواره»)
-// هرکدام دکمه/مدت عادی/مدت ویژه اولین‌بار/سقف تکرار/تک‌کاربره یا چندکاربره بودن و فعال/غیرفعال بودن مستقل خودشان را دارند.
-
-async function getActiveTestPlans(db) {
-  const { results } = await db.prepare("SELECT * FROM test_plans WHERE is_active = 1 ORDER BY sort_order ASC, id ASC").all();
-  return results || [];
-}
-
-async function getAllTestPlans(db) {
-  const { results } = await db.prepare("SELECT * FROM test_plans ORDER BY sort_order ASC, id ASC").all();
-  return results || [];
-}
-
-async function getTestPlanById(db, id) {
-  return await db.prepare("SELECT * FROM test_plans WHERE id = ?").bind(id).first();
-}
-
-// پیدا کردن کمپین فعال بر اساس متن دکمه‌ای که کاربر زده (چون دکمه‌های منو حالا داینامیک هستند)
-async function getActiveTestPlanByLabel(db, label) {
-  return await db.prepare("SELECT * FROM test_plans WHERE label = ? AND is_active = 1 LIMIT 1").bind(label).first();
+// محاسبه قیمت یک سرویس ثبت‌شده برای نمایش در گزارش‌ها (سرویس‌های تست/جشنواره/رایگان همیشه صفر هستند)
+function computeServicePrice(s) {
+  if (s.plan_type.includes('رایگان') || s.plan_type.includes('تست') || s.plan_type.includes('جشنواره')) return 0;
+  return getPlanPrice(s.plan_days, s.plan_type.includes('یک کاربره'));
 }
 
 // ================= توابع تاریخ شمسی =================
@@ -340,18 +377,17 @@ async function mainMenu(db, user_id) {
   // دکمه «دعوت دوستان» فقط زمانی نمایش داده می‌شود که کاربر حداقل یک سرویس با ورکر ثبت‌شده داشته باشد.
   const hasWorker = await db.prepare("SELECT 1 FROM services WHERE user_id = ? AND cf_domain IS NOT NULL AND cf_domain != '' LIMIT 1").bind(user_id).first();
 
-  // دکمه‌های هدیه/تست کاملاً داینامیک هستند: هر کمپین فعال (اکانت تست، جشنواره، ...) یک دکمه جدا می‌گیرد
-  const testPlans = await getActiveTestPlans(db);
-  const keyboard = [];
-  if (testPlans.length) {
-    keyboard.push([{ text: testPlans[0].label }, { text: "🛒 خرید سرویس" }]);
-    for (let i = 1; i < testPlans.length; i++) {
-      keyboard.push([{ text: testPlans[i].label }]);
-    }
-  } else {
-    keyboard.push([{ text: "🛒 خرید سرویس" }]);
-  }
-  keyboard.push([{ text: "📚 آموزش‌ها" }, { text: "📦 سرویس‌های من" }]);
+  // دکمه اکانت رایگان به‌صورت پویا بر اساس تنظیمات (اکانت تست یا جشنواره) ساخته می‌شود؛
+  // اگر هر دو در تنظیمات غیرفعال باشند، این دکمه اصلاً نمایش داده نمی‌شود.
+  const activeFree = getActiveFreeAccount();
+  const firstRow = [];
+  if (activeFree) firstRow.push({ text: activeFree.cfg.buttonText });
+  firstRow.push({ text: "🛒 خرید سرویس" });
+
+  const keyboard = [
+    firstRow,
+    [{ text: "📚 آموزش‌ها" }, { text: "📦 سرویس‌های من" }]
+  ];
 
   if (hasWorker) {
     keyboard.push([{ text: "🤝 دعوت دوستان (هدیه ۵ روزه)" }, { text: "👤 وضعیت من" }]);
@@ -378,8 +414,8 @@ function adminPanelMenu() {
 function settingsMenu() {
   return {
     keyboard: [
-      [{ text: "🧩 مدیریت پلن‌های اشتراک" }],
-      [{ text: "🎁 مدیریت اکانت تست / جشنواره" }],
+      [{ text: "🎁 مدیریت اکانت تست و جشنواره" }],
+      [{ text: "🛍 مدیریت پلن‌های اشتراک" }],
       [{ text: "🎟 مدیریت کدهای تخفیف" }],
       [{ text: "🗑 پاک کردن کامل دیتابیس" }],
       [{ text: "🔙 بازگشت به پنل مدیریت" }]
@@ -388,74 +424,77 @@ function settingsMenu() {
   };
 }
 
-// ================= پنل مدیریت پلن‌های اشتراک =================
-async function renderPlansListMessage(db) {
-  const plans = await getAllPlans(db);
-  if (!plans.length) {
-    return { msg: "📭 هیچ پلنی ثبت نشده است.\n\nبرای شروع، یک پلن جدید بسازید:", kb: { inline_keyboard: [[{ text: "➕ افزودن پلن جدید", callback_data: "admaddplan" }]] } };
-  }
-  let msg = "🧩 <b>مدیریت پلن‌های اشتراک</b>\n\n";
-  const rows = [];
-  plans.forEach(p => {
-    const statusIcon = p.is_active ? "✅" : "🚫";
-    const expTxt = p.expire_date_shamsi ? `\n⏳ در دسترس تا: ${p.expire_date_shamsi}` : "";
-    msg += `${statusIcon} <b>#${p.id} - ${escapeHtml(p.label)}</b>\n⏱ مدت: ${p.days} روز\n👤 تک‌کاربره: ${(p.price_single || 0).toLocaleString('fa-IR')} تومان\n👥 چندکاربره: ${(p.price_multi || 0).toLocaleString('fa-IR')} تومان${expTxt}\n➖➖➖➖\n`;
-    rows.push([
-      { text: `✏️ ویرایش #${p.id}`, callback_data: `admeditplan_${p.id}` },
-      { text: p.is_active ? `🚫 غیرفعال #${p.id}` : `✅ فعال‌سازی #${p.id}`, callback_data: `admtoggleplan_${p.id}` },
-      { text: `🗑 حذف #${p.id}`, callback_data: `admdelplan_${p.id}` }
-    ]);
-  });
-  rows.push([{ text: "➕ افزودن پلن جدید", callback_data: "admaddplan" }]);
-  return { msg, kb: { inline_keyboard: rows } };
+// ================= رندر پنل مدیریت اکانت تست و جشنواره (ادغام‌شده) =================
+function renderFreeAccountPanel() {
+  const t = SETTINGS.freeAccount.test;
+  const f = SETTINGS.freeAccount.festival;
+  const active = getActiveFreeAccount();
+
+  let msg = `🎁 <b>مدیریت اکانت تست و جشنواره</b>\n\n`;
+  msg += `📌 در حال حاضر فعال برای کاربران: <b>${active ? (active.mode === 'festival' ? 'جشنواره 🎉' : 'اکانت تست 🎁') : 'هیچ‌کدام (هر دو غیرفعال)'}</b>\n`;
+  msg += `⚠️ <i>توجه: تا زمانی که جشنواره روشن باشد، اکانت تست به‌طور خودکار برای کاربران غیرفعال است.</i>\n\n`;
+
+  msg += `——— 🎁 اکانت تست ———\n`;
+  msg += `وضعیت: ${t.enabled ? '✅ فعال' : '❌ غیرفعال'}\n`;
+  msg += `متن دکمه: <code>${escapeHtml(t.buttonText)}</code>\n`;
+  msg += `متن پیام هدیه: <code>${escapeHtml(t.messageText)}</code>\n`;
+  msg += `مدت زمان: <b>${t.days} روز</b> | نوع: <b>${t.userType === 'single' ? 'تک‌کاربره' : 'چندکاربره'}</b>\n`;
+  msg += `فاصله دریافت مجدد: <b>${t.cooldownDays} روز</b>\n\n`;
+
+  msg += `——— 🎉 جشنواره ———\n`;
+  msg += `وضعیت: ${f.enabled ? '✅ روشن' : '❌ خاموش'}\n`;
+  msg += `متن دکمه: <code>${escapeHtml(f.buttonText)}</code>\n`;
+  msg += `متن پیام هدیه: <code>${escapeHtml(f.messageText)}</code>\n`;
+  msg += `مدت زمان: <b>${f.days} روز</b> | نوع: <b>${f.userType === 'single' ? 'تک‌کاربره' : 'چندکاربره'}</b>\n`;
+
+  return msg;
 }
 
-function planEditFieldsKeyboard(planId) {
+function freeAccountKeyboard() {
+  const t = SETTINGS.freeAccount.test;
+  const f = SETTINGS.freeAccount.festival;
   return {
     inline_keyboard: [
-      [{ text: "✏️ نام دکمه", callback_data: `admeditplanfield_${planId}_label` }],
-      [{ text: "⏱ مدت اعتبار (روز)", callback_data: `admeditplanfield_${planId}_days` }],
-      [{ text: "👤 قیمت تک‌کاربره", callback_data: `admeditplanfield_${planId}_price_single` }],
-      [{ text: "👥 قیمت چندکاربره", callback_data: `admeditplanfield_${planId}_price_multi` }],
-      [{ text: "⏳ تاریخ پایان پیشنهاد (اختیاری)", callback_data: `admeditplanfield_${planId}_expire_date_shamsi` }],
-      [{ text: "🔙 بازگشت به لیست پلن‌ها", callback_data: "admplanslist" }]
+      [{ text: "— بخش اکانت تست —", callback_data: "noop" }],
+      [{ text: t.enabled ? "❌ غیرفعال کردن اکانت تست" : "✅ فعال کردن اکانت تست", callback_data: "cfgfree_toggle_test" }],
+      [{ text: "✏️ متن دکمه", callback_data: "cfgfree_btntext_test" }, { text: "✏️ متن پیام هدیه", callback_data: "cfgfree_msgtext_test" }],
+      [{ text: "📅 تعداد روز", callback_data: "cfgfree_days_test" }, { text: "🔁 فاصله دریافت مجدد", callback_data: "cfgfree_cooldown_test" }],
+      [{ text: t.userType === 'single' ? "👤 تک‌کاربره (تغییر به چندکاربره)" : "👥 چندکاربره (تغییر به تک‌کاربره)", callback_data: "cfgfree_usertype_test" }],
+      [{ text: "— بخش جشنواره —", callback_data: "noop" }],
+      [{ text: f.enabled ? "🛑 خاموش کردن جشنواره" : "🎉 روشن کردن جشنواره", callback_data: "cfgfree_toggle_festival" }],
+      [{ text: "✏️ متن دکمه", callback_data: "cfgfree_btntext_festival" }, { text: "✏️ متن پیام هدیه", callback_data: "cfgfree_msgtext_festival" }],
+      [{ text: "📅 تعداد روز", callback_data: "cfgfree_days_festival" }],
+      [{ text: f.userType === 'single' ? "👤 تک‌کاربره (تغییر به چندکاربره)" : "👥 چندکاربره (تغییر به تک‌کاربره)", callback_data: "cfgfree_usertype_festival" }],
+      [{ text: "🔙 بستن", callback_data: "cfgfree_close" }]
     ]
   };
 }
 
-// ================= پنل مدیریت کمپین‌های اکانت تست/جشنواره =================
-async function renderTestPlansListMessage(db) {
-  const plans = await getAllTestPlans(db);
-  if (!plans.length) {
-    return { msg: "📭 هیچ کمپین هدیه/تستی ثبت نشده است.\n\nبرای شروع، یک کمپین جدید بسازید:", kb: { inline_keyboard: [[{ text: "➕ افزودن کمپین جدید", callback_data: "admaddtestplan" }]] } };
-  }
-  let msg = "🎁 <b>مدیریت اکانت تست / جشنواره</b>\n\n💡 هر کمپین یک دکمه جدا در منوی کاربر است؛ می‌توانید هم «اکانت تست» عادی و هم یک کمپین «جشنواره» جداگانه با تنظیمات متفاوت داشته باشید.\n\n";
-  const rows = [];
-  plans.forEach(p => {
-    const statusIcon = p.is_active ? "✅" : "🚫";
-    const firstTimeTxt = p.first_time_days > 0 ? `${p.first_time_days} روز` : "بدون تفاوت (مثل روزهای عادی)";
-    msg += `${statusIcon} <b>#${p.id} - ${escapeHtml(p.label)}</b>\n⏱ مدت عادی: ${p.days} روز\n🆕 مدت ویژه اولین‌بار کلا وارد ربات‌شدن: ${firstTimeTxt}\n🔁 سقف تکرار: هر ${p.cooldown_days} روز یک‌بار\n👥 نوع مصرف: ${p.is_single ? "تک‌کاربره" : "چندکاربره"}\n➖➖➖➖\n`;
-    rows.push([
-      { text: `✏️ ویرایش #${p.id}`, callback_data: `admedittestplan_${p.id}` },
-      { text: p.is_active ? `🚫 غیرفعال #${p.id}` : `✅ فعال‌سازی #${p.id}`, callback_data: `admtoggletestplan_${p.id}` },
-      { text: `🗑 حذف #${p.id}`, callback_data: `admdeltestplan_${p.id}` }
-    ]);
-    rows.push([
-      { text: p.is_single ? `👥 تبدیل #${p.id} به چندکاربره` : `👤 تبدیل #${p.id} به تک‌کاربره`, callback_data: `admtoggletestplantype_${p.id}` }
-    ]);
-  });
-  rows.push([{ text: "➕ افزودن کمپین جدید", callback_data: "admaddtestplan" }]);
-  return { msg, kb: { inline_keyboard: rows } };
+// ================= رندر پنل مدیریت پلن‌های اشتراک =================
+function plansListKeyboard() {
+  const rows = SETTINGS.plans.map(p => ([{ text: `${p.enabled ? '✅' : '❌'} ${p.text} — ${p.price.toLocaleString('fa-IR')} ت`, callback_data: `cfgplan_open_${p.days}` }]));
+  rows.push([{ text: "🔙 بستن", callback_data: "cfgfree_close" }]);
+  return { inline_keyboard: rows };
 }
 
-function testPlanEditFieldsKeyboard(planId) {
+function planDetailMsg(p) {
+  const utLabel = p.userTypeMode === 'both' ? 'هردو (تک/چند کاربره)' : (p.userTypeMode === 'single' ? 'فقط تک‌کاربره' : 'فقط چندکاربره');
+  return `🛍 <b>${escapeHtml(p.text)}</b> (${p.days} روزه)\n\n` +
+    `وضعیت: ${p.enabled ? '✅ فعال' : '❌ غیرفعال'}\n` +
+    `قیمت پایه: <b>${p.price.toLocaleString('fa-IR')} تومان</b>\n` +
+    `هزینه اضافه حالت چندکاربره: <b>${(p.priceMultiExtra || 0).toLocaleString('fa-IR')} تومان</b>\n` +
+    `نوع مجاز خرید: <b>${utLabel}</b>`;
+}
+
+function planDetailKeyboard(days) {
   return {
     inline_keyboard: [
-      [{ text: "✏️ نام دکمه", callback_data: `admedittestplanfield_${planId}_label` }],
-      [{ text: "⏱ مدت عادی (روز)", callback_data: `admedittestplanfield_${planId}_days` }],
-      [{ text: "🆕 مدت ویژه اولین‌بار ورود به ربات (روز، ۰=بدون تفاوت)", callback_data: `admedittestplanfield_${planId}_first_time_days` }],
-      [{ text: "🔁 سقف تکرار (هر چند روز)", callback_data: `admedittestplanfield_${planId}_cooldown_days` }],
-      [{ text: "🔙 بازگشت به لیست کمپین‌ها", callback_data: "admtestplanslist" }]
+      [{ text: "❌ غیرفعال / ✅ فعال کردن این پلن", callback_data: `cfgplan_toggle_${days}` }],
+      [{ text: "✏️ ویرایش عنوان/متن پلن", callback_data: `cfgplan_text_${days}` }],
+      [{ text: "💵 ویرایش قیمت پایه", callback_data: `cfgplan_price_${days}` }],
+      [{ text: "➕ ویرایش هزینه اضافه چندکاربره", callback_data: `cfgplan_multiextra_${days}` }],
+      [{ text: "👥 تغییر نوع مجاز (تک/چند/هردو)", callback_data: `cfgplan_usertype_${days}` }],
+      [{ text: "🔙 بازگشت به لیست پلن‌ها", callback_data: "cfgplan_list" }]
     ]
   };
 }
@@ -496,24 +535,39 @@ function tutorialsMenu() {
 const FIXED_MENU_BUTTON_TEXTS = new Set([
   "🤝 دعوت دوستان (هدیه ۵ روزه)", "🎟 مدیریت کدهای تخفیف", "📊 گزارش فروش", "🎁 دریافت اکانت رایگان (تست)", "🛒 خرید سرویس", "📚 آموزش‌ها", "📦 سرویس‌های من", "👤 وضعیت من", "📞 ارتباط با پشتیبانی", "⚙️ ورود به پنل مدیریت حرفه‌ای",
   "👥 لیست کامل کاربران و خریدها", "🛠 مدیریت سرویس‌های کاربر", "📖 راهنمای پنل مدیریت", "🏠 بازگشت به منوی اصلی",
-  "📢 ارسال اطلاعیه", "⚙️ تنظیمات ربات", "🗑 پاک کردن کامل دیتابیس", "🔙 بازگشت به پنل مدیریت", "🧩 مدیریت پلن‌های اشتراک", "🎁 مدیریت اکانت تست / جشنواره",
+  "📢 ارسال اطلاعیه", "⚙️ تنظیمات ربات", "🗑 پاک کردن کامل دیتابیس", "🔙 بازگشت به پنل مدیریت",
+  "🎁 مدیریت اکانت تست و جشنواره", "🛍 مدیریت پلن‌های اشتراک",
   "⏳ صفر کردن زمان", "➕ تمدید / شارژ", "👥 تبدیل به چندکاربره", "👤 تبدیل به تک‌کاربره", "✅ وصل فوری", "🛑 قطع فوری", "✏️ ویرایش ورکر",
   "🔙 مرحله قبل", "🔙 بازگشت به پنل کاربری", "❌ لغو عملیات",
   "🚀 آموزش برنامه v2ray برای نصب کانفیگ", "📥 آموزش برنامه v2box برای نصب کانفیگ", "💬 راهنمای ارسال پیام به پشتیبانی"
 ]);
 
-// کیبورد خرید سرویس - کاملاً داینامیک، از جدول plans خوانده می‌شود
-async function daysKeyboard(db) {
-  const plans = await getActivePlans(db);
-  if (!plans.length) return { inline_keyboard: [] };
+// پس از مشخص شدن پلن و نوع کاربری (تک/چند)، کاربر را به مرحله وارد کردن کد تخفیف می‌برد
+async function proceedToDiscountStep(db, user_id, chat_id, msg_id, state) {
+  state.step = 'WAIT_DISCOUNT_CODE';
+  await setState(db, user_id, state);
+  const kb = { inline_keyboard: [[{ text: "➡️ ادامه بدون کد تخفیف (صدور فاکتور)", callback_data: "skip_discount" }]] };
+  await callTelegram('editMessageText', {
+    chat_id,
+    message_id: msg_id,
+    text: "🏷 <b>کد تخفیف</b>\n\nاگر کد تخفیفی دارید، لطفاً آن را تایپ و ارسال کنید. در غیر این صورت برای دریافت فاکتور روی دکمه زیر کلیک کنید:",
+    reply_markup: kb,
+    parse_mode: "HTML"
+  });
+}
 
+function daysKeyboard() {
+  // فقط پلن‌های فعال (بر اساس تنظیمات ادمین) نمایش داده می‌شوند؛ متن و قیمت هر پلن نیز از تنظیمات خوانده می‌شود.
+  const enabledPlans = SETTINGS.plans.filter(p => p.enabled);
   const rows = [];
-  for (let i = 0; i < plans.length; i += 2) {
+  for (let i = 0; i < enabledPlans.length; i += 2) {
     const row = [];
-    const p1 = plans[i];
-    row.push({ text: `${p1.label} (از ${Math.round((p1.price_single || p1.price_multi || 0) / 1000).toLocaleString('fa-IR')} ه.ت)`, callback_data: `plan_${p1.id}` });
-    const p2 = plans[i + 1];
-    if (p2) row.push({ text: `${p2.label} (از ${Math.round((p2.price_single || p2.price_multi || 0) / 1000).toLocaleString('fa-IR')} ه.ت)`, callback_data: `plan_${p2.id}` });
+    const p1 = enabledPlans[i];
+    row.push({ text: `${p1.text} (${(p1.price/1000).toLocaleString('fa-IR')} ه.ت)`, callback_data: `plan_${p1.days}` });
+    if (enabledPlans[i + 1]) {
+      const p2 = enabledPlans[i + 1];
+      row.push({ text: `${p2.text} (${(p2.price/1000).toLocaleString('fa-IR')} ه.ت)`, callback_data: `plan_${p2.days}` });
+    }
     rows.push(row);
   }
   return { inline_keyboard: rows };
@@ -578,6 +632,7 @@ export default {
     }
 
     const db = env.DB;
+    await loadSettings(db);
     const update = await request.json();
 
     try {
@@ -636,7 +691,11 @@ export default {
             return new Response('OK');
           }
 
-          const welcome = `👋 <b>به ربات هوشمند ما خوش آمدید!</b>\n\n💡 <b>هدیه ویژه ما:</b> کاربران جدید برای بار اول یک اکانت <b>تست ۲ روزه (تک‌کاربره)</b> رایگان دریافت می‌کنند. همچنین تمامی کاربران می‌توانند <b>هر ماه یکبار، یک اکانت رایگان ۱ روزه</b> دریافت کنند!\n\nپایداری، سرعت و امنیت را با ما تجربه کنید. لطفاً از منوی زیر یک گزینه را انتخاب کنید 👇`;
+          const welcomeFree = getActiveFreeAccount();
+          const freeGiftLine = welcomeFree
+            ? `💡 <b>هدیه ویژه ما:</b> با دکمه «${escapeHtml(welcomeFree.cfg.buttonText)}» می‌توانید یک اکانت رایگان دریافت کنید!\n\n`
+            : "";
+          const welcome = `👋 <b>به ربات هوشمند ما خوش آمدید!</b>\n\n${freeGiftLine}پایداری، سرعت و امنیت را با ما تجربه کنید. لطفاً از منوی زیر یک گزینه را انتخاب کنید 👇`;
           await sendMessage(chat_id, welcome, await mainMenu(db, user_id));
           return new Response('OK');
         }
@@ -654,7 +713,7 @@ export default {
             await sendMessage(state.target_user, "❌ فرآیند صدور سرویس توسط پشتیبانی لغو شد. می‌توانید مجدداً درخواست دهید.", await mainMenu(db, state.target_user));
           }
           await clearState(db, ADMIN_ID);
-          const retryKb = state.target_user ? { inline_keyboard: [[{ text: "🔄 تلاش مجدد برای همین کاربر (ثبت ورکر جدید)", callback_data: `admretrydomain_${state.target_user}_${state.days}_${state.hours}_${state.action}_${state.user_type}_${state.test_plan_id || 0}` }]] } : null;
+          const retryKb = state.target_user ? { inline_keyboard: [[{ text: "🔄 تلاش مجدد برای همین کاربر (ثبت ورکر جدید)", callback_data: `admretrydomain_${state.target_user}_${state.days}_${state.hours}_${state.action}_${state.user_type}_${state.free_mode || 'test'}` }]] } : null;
           await sendMessage(chat_id, `⚠️ چون از مرحله «ثبت آدرس ورکر» خارج شدید، آن عملیات به‌صورت خودکار لغو شد و کاربر مربوطه از حالت انتظار خارج و مطلع گردید.${cancelledUserInfo}\n\nبرای تکمیل درخواست او لازم است دوباره از «🛠 مدیریت سرویس‌های کاربر» او را جستجو و اقدام کنید، یا از دکمه زیر استفاده نمایید.`, adminPanelMenu());
           if (retryKb) await sendMessage(chat_id, "برای شروع مجدد سریع همین درخواست:", retryKb);
           return new Response('OK');
@@ -665,7 +724,7 @@ export default {
           if (text === "❌ لغو عملیات") {
              if (state.admin_message_id) {
                  await callTelegram('editMessageReplyMarkup', { chat_id: ADMIN_ID, message_id: state.admin_message_id, reply_markup: { inline_keyboard: [] } });
-                 if (state.is_test || state.admin_notified_as_text) {
+                 if (state.is_test) {
                      await callTelegram('editMessageText', { chat_id: ADMIN_ID, message_id: state.admin_message_id, text: "❌ <b>این درخواست توسط کاربر لغو شد.</b>", parse_mode: "HTML" });
                  } else {
                      await callTelegram('editMessageCaption', { chat_id: ADMIN_ID, message_id: state.admin_message_id, caption: "❌ <b>این درخواست توسط کاربر لغو شد.</b>", parse_mode: "HTML" });
@@ -904,7 +963,7 @@ export default {
                if (!isNaN(d)) expView = new Intl.DateTimeFormat('fa-IR', { timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(d);
             }
 
-            let planPrice = await getPlanPriceByDays(db, s.plan_days, !s.plan_type.includes('چند کاربره'));
+            let planPrice = computeServicePrice(s);
             let priceText = planPrice > 0 ? `${planPrice.toLocaleString('fa-IR')} تومان` : "تست / رایگان";
 
             let srvMsg = `📦 <b>شناسه سرویس:</b> #${s.id}\n`;
@@ -1003,7 +1062,6 @@ export default {
           const yearStr = todayStr.substring(0, 4);
 
           const { results: allServices } = await db.prepare("SELECT plan_days, plan_type, purchase_date_shamsi FROM services").all();
-          const priceMap = await buildDaysPriceMap(db);
 
           let dailyCount = 0, dailyIncome = 0;
           let monthlyCount = 0, monthlyIncome = 0;
@@ -1014,10 +1072,8 @@ export default {
             if (!s.purchase_date_shamsi) return;
             const pDate = s.purchase_date_shamsi;
             
-            // محاسبه قیمت بر اساس روز و حالت چندکاربره (از جدول پلن‌های داینامیک)
-            const priceEntry = priceMap.get(s.plan_days) || { single: 0, multi: 0 };
-            let price = s.plan_type.includes('چند کاربره') ? priceEntry.multi : priceEntry.single;
-            if (s.plan_type.includes('رایگان') || s.plan_type.includes('تست')) price = 0;
+            // محاسبه قیمت بر اساس روز و حالت چندکاربره
+            let price = computeServicePrice(s);
 
             totalCount++;
             totalIncome += price;
@@ -1044,9 +1100,7 @@ export default {
           `2️⃣ <b>مدیریت سرویس‌های کاربر:</b> روی دکمه «🛠 مدیریت سرویس‌های کاربر» بزنید. حالا می‌توانید بر اساس <b>آیدی، نام، یوزرنیم یا آدرس ورکر</b> جستجو کنید. گزینه‌های جدید مانند <b>قطع فوری، صفر کردن زمان و تغییر کاربری</b> در همانجا قابل استفاده هستند.\n\n` +
           `3️⃣ <b>پاسخ به پیام‌های شخصی:</b> هنگامی که کاربر پیامی بفرستد، دکمه «💬 پاسخ به این پیام» زیر آن قرار می‌گیرد تا مستقیماً به کاربر پاسخ دهید.\n\n` +
           `4️⃣ <b>ارسال اطلاعیه:</b> از دکمه «📢 ارسال اطلاعیه» استفاده کنید و انتخاب کنید که برای <b>همه کاربران</b> یا فقط <b>کاربران خاص</b> (با آیدی/یوزرنیم) ارسال شود. هر نوع پیام (متن، عکس، لینک و ...) که ارسال کنید، پس از تایید شما عیناً برای مقصد انتخاب‌شده فرستاده می‌شود.\n\n` +
-          `5️⃣ <b>تنظیمات ربات:</b> از دکمه «⚙️ تنظیمات ربات» می‌توانید در صورت نیاز کل دیتابیس (کاربران و سرویس‌ها) را به‌طور کامل و غیرقابل‌بازگشت پاک کنید.\n\n` +
-          `6️⃣ <b>مدیریت پلن‌های اشتراک:</b> از مسیر «⚙️ تنظیمات ربات ← 🧩 مدیریت پلن‌های اشتراک» می‌توانید پلن جدید بسازید (نام دکمه، مدت اعتبار، قیمت تک‌کاربره و چندکاربره، تاریخ پایان پیشنهاد اختیاری)، پلن‌های موجود را ویرایش کنید، و به‌جای حذف کامل، آن‌ها را فقط غیرفعال/فعال کنید تا از لیست خرید کاربران خارج/وارد شوند.\n💡 اگر قیمت تک‌کاربره یا چندکاربرهٔ یک پلن را صفر بگذارید، آن حالت «رایگان» می‌شود و بدون رسید مستقیم برای تایید شما ارسال می‌شود.\n\n` +
-          `7️⃣ <b>مدیریت اکانت تست / جشنواره:</b> از مسیر «⚙️ تنظیمات ربات ← 🎁 مدیریت اکانت تست / جشنواره» می‌توانید همزمان چند کمپین هدیه مستقل بسازید (مثلاً هم «اکانت تست» عادی هم یک «جشنواره» جدا)، هرکدام با نام دکمه، مدت عادی، مدت ویژه برای کاربرانی که اولین‌بار کلا وارد ربات شده‌اند، سقف تکرار (مثلاً هر ۳۰ روز) و تک/چندکاربره بودن مخصوص به خودش؛ و می‌توانید هرکدام را جدا فعال/غیرفعال یا حذف کنید.`;
+          `5️⃣ <b>تنظیمات ربات:</b> از دکمه «⚙️ تنظیمات ربات» می‌توانید در صورت نیاز کل دیتابیس (کاربران و سرویس‌ها) را به‌طور کامل و غیرقابل‌بازگشت پاک کنید.`;
           await sendMessage(chat_id, guideText, adminPanelMenu());
           return new Response('OK');
         }
@@ -1060,15 +1114,13 @@ export default {
             }
 
             let msgText = "📦 <b>لیست تمامی سرویس‌های شما:</b>\n\n";
-            const priceMapMy = await buildDaysPriceMap(db);
 
             userServices.forEach((s, idx) => {
               msgText += `🔹 <b>سرویس ${idx + 1}:</b>\n`;
               msgText += `🛍 <b>پکیج:</b> ${planDaysLabel(s.plan_days)} (${s.plan_type})\n`;
               msgText += `📅 <b>تاریخ ثبت:</b> ${s.purchase_date_shamsi}\n`;
 
-              const priceEntryMy = priceMapMy.get(s.plan_days) || { single: 0, multi: 0 };
-              let planPrice = s.plan_type.includes('چند کاربره') ? priceEntryMy.multi : priceEntryMy.single;
+              let planPrice = computeServicePrice(s);
               let priceText = planPrice > 0 ? `${planPrice.toLocaleString('fa-IR')} تومان` : "تست / رایگان";
               msgText += `💳 <b>مبلغ خرید:</b> ${priceText}\n`;
 
@@ -1271,61 +1323,58 @@ export default {
 		
 
         if (text === "🛒 خرید سرویس" && user_id !== ADMIN_ID) {
-          const buyKb = await daysKeyboard(db);
-          if (!buyKb.inline_keyboard.length) {
-            await sendMessage(chat_id, "⛔ در حال حاضر هیچ پلن فعالی برای خرید موجود نیست. لطفاً بعداً مراجعه کنید یا با پشتیبانی تماس بگیرید.");
-            return new Response('OK');
-          }
           const rules = "⚠️ <b>قوانین سرویس:</b>\nسرویس‌های ما کاملاً نامحدود هستند، اما شامل قانون مصرف منصفانه می‌شوند. در صورت مصرف غیرعادی، اکانت موقتاً قطع شده و از روز بعد متصل می‌گردد.\n\n⏳ لطفاً مدت زمان سرویس خود را انتخاب کنید:";
-          await sendMessage(chat_id, rules, buyKb);
+          await sendMessage(chat_id, rules, daysKeyboard());
           await sendMessage(chat_id, "در صورت نیاز به انصراف، از دکمه‌های پایین استفاده کنید:", backAndSupportKeyboard());
           return new Response('OK');
         }
 
-        // ================= دریافت اکانت رایگان/تست (کاملاً داینامیک - ممکن است چند کمپین مستقل مثل «تست» و «جشنواره» همزمان فعال باشند) =================
-        if (user_id !== ADMIN_ID) {
-          const testPlan = text ? await getActiveTestPlanByLabel(db, text) : null;
-          if (testPlan) {
+        // ================= درخواست اکانت رایگان (اکانت تست یا جشنواره — بر اساس تنظیمات ادمین) =================
+        {
+          const activeFree = getActiveFreeAccount();
+          if (activeFree && text === activeFree.cfg.buttonText && user_id !== ADMIN_ID) {
             if (state && state.locked) {
               await sendMessage(user_id, "⏳ درخواست قبلی شما در حال پردازش است. لطفاً منتظر بمانید...");
               return new Response('OK');
             }
 
-            // پرچم دائمی: آیا این کاربر تا حالا (در کل عمر حساب) از هیچ کمپین رایگانی استفاده کرده یا نه؛ هیچ‌وقت ریست نمی‌شود
-            const userRow = await db.prepare("SELECT first_gift_used FROM users WHERE user_id = ?").bind(user_id).first();
-            const isFirstEver = !userRow || !userRow.first_gift_used;
+            const userRow = await db.prepare("SELECT last_test_date, last_festival_claim FROM users WHERE user_id = ?").bind(user_id).first();
 
-            // سقف تکرار مخصوص همین کمپین (هر کمپین سقف تکرار جدای خودش را دارد)
-            const claimRow = await db.prepare("SELECT last_claim_shamsi FROM test_claims WHERE user_id = ? AND test_plan_id = ?").bind(user_id, testPlan.id).first();
-            if (claimRow && claimRow.last_claim_shamsi) {
-              const lastClaimTime = new Date(claimRow.last_claim_shamsi).getTime();
-              const diffDays = (Date.now() - lastClaimTime) / (1000 * 60 * 60 * 24);
-              if (diffDays < testPlan.cooldown_days) {
-                const remainingDays = Math.ceil(testPlan.cooldown_days - diffDays);
-                await sendMessage(user_id, `❌ <b>دریافت مجدد امکان‌پذیر نیست!</b>\n\nشما اخیراً از «${escapeHtml(testPlan.label)}» استفاده کرده‌اید. سقف تکرار این هدیه هر <b>${testPlan.cooldown_days} روز</b> یک‌بار است.\n⏳ لطفاً <b>${remainingDays} روز</b> دیگر مراجعه کنید.`);
+            if (activeFree.mode === 'test') {
+              const cd = activeFree.cfg.cooldownDays || 0;
+              if (cd > 0 && userRow && userRow.last_test_date) {
+                const lastTestTime = new Date(userRow.last_test_date).getTime();
+                const diffDays = (Date.now() - lastTestTime) / (1000 * 60 * 60 * 24);
+                if (diffDays < cd) {
+                  const remainingDays = Math.ceil(cd - diffDays);
+                  await sendMessage(user_id, `❌ <b>دریافت مجدد امکان‌پذیر نیست!</b>\n\nشما پیش‌تر اکانت رایگان خود را دریافت کرده‌اید.\n⏳ لطفاً <b>${remainingDays} روز</b> دیگر برای دریافت تست بعدی مراجعه کنید.`);
+                  return new Response('OK');
+                }
+              }
+            } else {
+              // جشنواره: هر کاربر فقط یک‌بار در طول یک دوره فعال بودن جشنواره می‌تواند هدیه بگیرد
+              const currentRound = activeFree.cfg.enabledAt || 'on';
+              if (userRow && userRow.last_festival_claim === currentRound) {
+                await sendMessage(user_id, "❌ شما قبلاً هدیه این جشنواره را دریافت کرده‌اید. 🎉");
                 return new Response('OK');
               }
             }
 
-            const applyDays = (isFirstEver && testPlan.first_time_days > 0) ? testPlan.first_time_days : testPlan.days;
-            const applySingle = !!testPlan.is_single;
-            const typeLabel = applySingle ? "تک‌کاربره" : "چندکاربره";
+            const freeDays = activeFree.cfg.days;
+            const isSingle = activeFree.cfg.userType === 'single';
+            const typeLabel = activeFree.mode === 'festival' ? 'جشنواره' : 'اکانت تست';
 
-            let msgText = (isFirstEver && testPlan.first_time_days > 0)
-              ? `🎁 <b>مژده:</b> چون اولین باری است که کلا وارد ربات شده‌اید، یک اکانت <b>${applyDays} روزه (${typeLabel})</b> به شما تعلق می‌گیرد!\n(از دفعات بعد، هدیه شما ${testPlan.days} روزه خواهد بود)`
-              : `🎁 اکانت هدیه شما (<b>${applyDays} روزه و ${typeLabel}</b>) در حال آماده‌سازی است...\n\n⚠️ <b>هشدار:</b> لطفاً قوانین مصرف منصفانه را رعایت کنید، در غیر این صورت امکان دریافت مجدد در آینده مسدود خواهد شد.`;
+            await sendMessage(user_id, activeFree.cfg.messageText);
 
-            await sendMessage(user_id, msgText);
-
-            let newState = { days: applyDays, hours: 0, type: `اکانت تست (${applyDays} روزه - ${typeLabel})`, is_test: true, test_plan_id: testPlan.id, user_type: applySingle ? '1' : '0', step: 'PENDING_ADMIN' };
+            let newState = { days: freeDays, hours: 0, type: `${typeLabel} (${freeDays} روزه - ${isSingle ? 'تک‌کاربره' : 'چندکاربره'})`, is_test: true, free_mode: activeFree.mode, user_type: isSingle ? '1' : '0', step: 'PENDING_ADMIN' };
 
             const userLink = getUserLink(user_id, first_name, username);
             const lastSrv = await db.prepare("SELECT cf_domain FROM services WHERE user_id = ? ORDER BY id DESC LIMIT 1").bind(user_id).first();
             const workerText = lastSrv ? `\n🌐 <b>ورکر فعلی:</b> <code>${lastSrv.cf_domain}</code>` : `\n🌐 <b>ورکر فعلی:</b> ندارد (نیاز به ثبت ورکر جدید)`;
 
-            const admText = `🎁 <b>درخواست هدیه (${escapeHtml(testPlan.label)} - ${newState.type})</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>${workerText}`;
+            const admText = `🎁 <b>درخواست ${newState.type}</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>${workerText}`;
             const admKb = { inline_keyboard: [
-                [{ text: "✅ تایید و ارسال لینک", callback_data: `admaprv_test_${user_id}_${applyDays}_0_${applySingle ? '1' : '0'}_${testPlan.id}` }],
+                [{ text: "✅ تایید و ارسال لینک", callback_data: `admaprv_test_${user_id}_${freeDays}_0_${isSingle ? '1' : '0'}_${activeFree.mode}` }],
                 [{ text: "❌ رد کردن", callback_data: `admrej_${user_id}` }]
             ]};
 
@@ -1358,7 +1407,7 @@ export default {
           const lastSrv = await db.prepare("SELECT cf_domain FROM services WHERE user_id = ? ORDER BY id DESC LIMIT 1").bind(user_id).first();
           const workerText = lastSrv ? `🌐 <b>ورکر فعلی کاربر:</b> <code>${lastSrv.cf_domain}</code>\n` : `🌐 <b>ورکر فعلی کاربر:</b> ندارد (نیاز به ثبت ورکر جدید)\n`;
 
-          let caption = `🧾 <b>درخواست پرداخت جدید</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>\n📅 <b>زمان ثبت:</b> ${getShamsiNow()}\n📦 پلن: ${info.plan_label || planDaysLabel(info.days)} - ${info.type}\n💵 مبلغ: ${(info.price_paid || 0).toLocaleString('fa-IR')} تومان\n${workerText}`;
+          let caption = `🧾 <b>درخواست پرداخت جدید</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>\n📅 <b>زمان ثبت:</b> ${getShamsiNow()}\n📦 پلن: ${planDaysLabel(info.days)} - ${info.type}\n${workerText}`;
           const isSingle = info.type.includes('یک کاربره') ? '1' : '0';
           
           const admMarkup = { inline_keyboard: [
@@ -1405,7 +1454,6 @@ export default {
           if (state.action === 'test') {
             applyHours = parseInt(applyDays) * 24;
             applyDays = 0;
-            // applySingle از تنظیمات همان کمپین تست/جشنواره خوانده می‌شود (دیگر همیشه تک‌کاربره نیست)
           }
 
           const cfRes = await updateCloudflareExp(domainInput, applyDays, applyHours, applySingle, state.target_user, db);
@@ -1413,12 +1461,16 @@ export default {
           if (cfRes.success && cfRes.subLink) {
 
             const shamsiNow = getShamsiNow();
-            const planName = state.action === 'test' ? `تست ${state.days} روزه (${applySingle ? 'یک کاربره' : 'چند کاربره'})` : `سرویس ${planDaysLabel(state.days)} (${applySingle ? 'یک کاربره' : 'چند کاربره'})`;
-            const planTypeDb = state.action === 'test' ? `اکانت تست (رایگان) - ${applySingle ? 'یک کاربره' : 'چند کاربره'}` : (applySingle ? 'یک کاربره' : 'چند کاربره');
+            const freeModeLabel = state.free_mode === 'festival' ? 'جشنواره' : 'تست';
+            const planName = state.action === 'test' ? `${freeModeLabel} ${state.days} روزه (${applySingle ? 'یک کاربره' : 'چند کاربره'})` : `سرویس ${planDaysLabel(state.days)} (${applySingle ? 'یک کاربره' : 'چند کاربره'})`;
+            const planTypeDb = state.action === 'test' ? `اکانت ${freeModeLabel} (رایگان) - ${applySingle ? 'یک کاربره' : 'چند کاربره'}` : (applySingle ? 'یک کاربره' : 'چند کاربره');
             
-            if (state.action === 'test' && state.test_plan_id) {
-              await db.prepare("INSERT INTO test_claims (user_id, test_plan_id, last_claim_shamsi, claim_count) VALUES (?, ?, ?, 1) ON CONFLICT(user_id, test_plan_id) DO UPDATE SET last_claim_shamsi = excluded.last_claim_shamsi, claim_count = claim_count + 1").bind(state.target_user, state.test_plan_id, getShamsiDateOnly()).run();
-              await db.prepare("INSERT INTO users (user_id, first_gift_used) VALUES (?, 1) ON CONFLICT(user_id) DO UPDATE SET first_gift_used = 1").bind(state.target_user).run();
+            if (state.action === 'test') {
+              if (state.free_mode === 'festival') {
+                await db.prepare("INSERT INTO users (user_id, last_festival_claim) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_festival_claim = excluded.last_festival_claim").bind(state.target_user, SETTINGS.freeAccount.festival.enabledAt || 'on').run();
+              } else {
+                await db.prepare("INSERT INTO users (user_id, last_test_date) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_test_date = excluded.last_test_date").bind(state.target_user, getShamsiDateOnly()).run();
+              }
             }
             
             await db.prepare("INSERT INTO services (user_id, plan_days, plan_type, cf_domain, sub_link, exp_date, status, purchase_date_shamsi) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
@@ -1537,182 +1589,81 @@ export default {
           return new Response('OK');
         }
 
+        // ================= مدیریت اکانت تست و جشنواره (ادغام‌شده) =================
+        if (text === "🎁 مدیریت اکانت تست و جشنواره" && user_id === ADMIN_ID) {
+          await sendMessage(chat_id, renderFreeAccountPanel(), freeAccountKeyboard());
+          return new Response('OK');
+        }
+
         // ================= مدیریت پلن‌های اشتراک =================
-        if (text === "🧩 مدیریت پلن‌های اشتراک" && user_id === ADMIN_ID) {
+        if (text === "🛍 مدیریت پلن‌های اشتراک" && user_id === ADMIN_ID) {
+          await sendMessage(chat_id, "🛍 <b>مدیریت پلن‌های اشتراک</b>\n\nیکی از پلن‌ها را برای ویرایش انتخاب کنید:", plansListKeyboard());
+          return new Response('OK');
+        }
+
+        // ================= دریافت مقدار جدید برای یکی از تنظیمات (اکانت تست/جشنواره/پلن‌ها) =================
+        if (user_id === ADMIN_ID && state && state.step === 'WAIT_CFG_INPUT') {
+          const val = text.trim();
+          const cfgType = state.cfg_type;
+          let errMsg = null;
+
+          if (cfgType === 'test_btn') SETTINGS.freeAccount.test.buttonText = val;
+          else if (cfgType === 'test_msg') SETTINGS.freeAccount.test.messageText = val;
+          else if (cfgType === 'test_days') {
+            const n = parseInt(val);
+            if (!n || n < 1) errMsg = "❌ عدد نامعتبر است. یک عدد صحیح بزرگ‌تر از صفر ارسال کنید.";
+            else SETTINGS.freeAccount.test.days = n;
+          }
+          else if (cfgType === 'test_cooldown') {
+            const n = parseInt(val);
+            if (isNaN(n) || n < 0) errMsg = "❌ عدد نامعتبر است.";
+            else SETTINGS.freeAccount.test.cooldownDays = n;
+          }
+          else if (cfgType === 'festival_btn') SETTINGS.freeAccount.festival.buttonText = val;
+          else if (cfgType === 'festival_msg') SETTINGS.freeAccount.festival.messageText = val;
+          else if (cfgType === 'festival_days') {
+            const n = parseInt(val);
+            if (!n || n < 1) errMsg = "❌ عدد نامعتبر است. یک عدد صحیح بزرگ‌تر از صفر ارسال کنید.";
+            else SETTINGS.freeAccount.festival.days = n;
+          }
+          else if (cfgType === 'plan_text') {
+            const p = getPlan(state.cfg_days);
+            if (p) p.text = val;
+          }
+          else if (cfgType === 'plan_price') {
+            const n = parseInt(val.replace(/,/g, ''));
+            if (isNaN(n) || n < 0) errMsg = "❌ عدد نامعتبر است. فقط عدد (به تومان) ارسال کنید.";
+            else { const p = getPlan(state.cfg_days); if (p) p.price = n; }
+          }
+          else if (cfgType === 'plan_multiextra') {
+            const n = parseInt(val.replace(/,/g, ''));
+            if (isNaN(n) || n < 0) errMsg = "❌ عدد نامعتبر است. فقط عدد (به تومان) ارسال کنید.";
+            else { const p = getPlan(state.cfg_days); if (p) p.priceMultiExtra = n; }
+          }
+
+          if (errMsg) {
+            await sendMessage(ADMIN_ID, errMsg, pendingMenu());
+            return new Response('OK');
+          }
+
+          await saveSettings(db);
           await clearState(db, ADMIN_ID);
-          const { msg, kb } = await renderPlansListMessage(db);
-          await sendMessage(ADMIN_ID, msg, kb);
-          return new Response('OK');
-        }
 
-        // مراحل ساخت پلن جدید (نام دکمه → مدت روز → قیمت تک‌کاربره → قیمت چندکاربره → تاریخ پایان پیشنهاد)
-        if (user_id === ADMIN_ID && state && state.step === 'WAIT_PLAN_LABEL') {
-          const label = text.trim();
-          if (!label) {
-            await sendMessage(ADMIN_ID, "❌ نام دکمه نمی‌تواند خالی باشد. لطفاً دوباره ارسال کنید:", pendingMenu());
-            return new Response('OK');
-          }
-          await setState(db, ADMIN_ID, { step: 'WAIT_PLAN_DAYS', new_plan: { label } });
-          await sendMessage(ADMIN_ID, "⏳ <b>مدت اعتبار اشتراک</b> را بر حسب روز وارد کنید (مثلاً: 30):", pendingMenu());
-          return new Response('OK');
-        }
-
-        if (user_id === ADMIN_ID && state && state.step === 'WAIT_PLAN_DAYS') {
-          const days = parseInt(text.trim());
-          if (isNaN(days) || days <= 0) {
-            await sendMessage(ADMIN_ID, "❌ لطفاً یک عدد معتبر برای تعداد روز وارد کنید:", pendingMenu());
-            return new Response('OK');
-          }
-          const newPlan = { ...state.new_plan, days };
-          await setState(db, ADMIN_ID, { step: 'WAIT_PLAN_PRICE_SINGLE', new_plan: newPlan });
-          await sendMessage(ADMIN_ID, "👤 <b>قیمت حالت تک‌کاربره</b> را به تومان وارد کنید (مثلاً: 45000):", pendingMenu());
-          return new Response('OK');
-        }
-
-        if (user_id === ADMIN_ID && state && state.step === 'WAIT_PLAN_PRICE_SINGLE') {
-          const priceSingle = parseInt(text.trim());
-          if (isNaN(priceSingle) || priceSingle < 0) {
-            await sendMessage(ADMIN_ID, "❌ لطفاً یک عدد معتبر برای قیمت وارد کنید:", pendingMenu());
-            return new Response('OK');
-          }
-          const newPlan = { ...state.new_plan, price_single: priceSingle };
-          await setState(db, ADMIN_ID, { step: 'WAIT_PLAN_PRICE_MULTI', new_plan: newPlan });
-          await sendMessage(ADMIN_ID, "👥 <b>قیمت حالت چندکاربره</b> را به تومان وارد کنید (اگر نمی‌خواهید این پلن حالت چندکاربره داشته باشد، عدد 0 ارسال کنید):", pendingMenu());
-          return new Response('OK');
-        }
-
-        if (user_id === ADMIN_ID && state && state.step === 'WAIT_PLAN_PRICE_MULTI') {
-          const priceMulti = parseInt(text.trim());
-          if (isNaN(priceMulti) || priceMulti < 0) {
-            await sendMessage(ADMIN_ID, "❌ لطفاً یک عدد معتبر برای قیمت وارد کنید:", pendingMenu());
-            return new Response('OK');
-          }
-          const newPlan = { ...state.new_plan, price_multi: priceMulti };
-          await setState(db, ADMIN_ID, { step: 'WAIT_PLAN_EXPIRY', new_plan: newPlan });
-          const expKb = { inline_keyboard: [[{ text: "♾ بدون تاریخ انقضا", callback_data: "planexpiry_none" }]] };
-          await sendMessage(ADMIN_ID, "⏳ اگر می‌خواهید این پلن فقط تا تاریخ خاصی در دسترس باشد (پیشنهاد ویژه/زمان‌دار)، تاریخ را به شمسی وارد کنید (مثال: 1403/12/29).\n\nدر غیر این صورت روی دکمه زیر بزنید:", expKb);
-          return new Response('OK');
-        }
-
-        if (user_id === ADMIN_ID && state && state.step === 'WAIT_PLAN_EXPIRY') {
-          const expireDate = text.trim();
-          const np = state.new_plan;
-          const { results: maxRow } = await db.prepare("SELECT COALESCE(MAX(sort_order), 0) as m FROM plans").all();
-          const nextOrder = (maxRow && maxRow[0] ? maxRow[0].m : 0) + 1;
-          await db.prepare("INSERT INTO plans (label, days, price_single, price_multi, is_active, sort_order, expire_date_shamsi) VALUES (?, ?, ?, ?, 1, ?, ?)")
-            .bind(np.label, np.days, np.price_single, np.price_multi, nextOrder, expireDate || null).run();
-          await clearState(db, ADMIN_ID);
-          await sendMessage(ADMIN_ID, `✅ پلن <b>${escapeHtml(np.label)}</b> با موفقیت ساخته شد و اکنون فعال است.`);
-          const { msg, kb } = await renderPlansListMessage(db);
-          await sendMessage(ADMIN_ID, msg, kb);
-          return new Response('OK');
-        }
-
-        // ویرایش مقدار یک فیلد از پلن
-        if (user_id === ADMIN_ID && state && state.step === 'WAIT_PLAN_EDIT_VALUE') {
-          const { plan_id, field } = state;
-          let value = text.trim();
-          const numericFields = ['days', 'price_single', 'price_multi'];
-          if (numericFields.includes(field)) {
-            const n = parseInt(value);
-            if (isNaN(n) || n < 0) {
-              await sendMessage(ADMIN_ID, "❌ لطفاً یک عدد معتبر وارد کنید:", pendingMenu());
-              return new Response('OK');
+          if (cfgType.startsWith('plan_')) {
+            await sendMessage(ADMIN_ID, "✅ پلن با موفقیت بروزرسانی شد.", settingsMenu());
+            const updatedPlan = getPlan(state.cfg_days);
+            if (updatedPlan) {
+              await sendMessage(ADMIN_ID, planDetailMsg(updatedPlan), planDetailKeyboard(state.cfg_days));
             }
-            value = n;
+          } else {
+            await sendMessage(ADMIN_ID, "✅ تنظیمات با موفقیت بروزرسانی شد.", settingsMenu());
+            await sendMessage(ADMIN_ID, renderFreeAccountPanel(), freeAccountKeyboard());
           }
-          if (field === 'expire_date_shamsi' && (value === '-' || value === '' || value.toLowerCase() === 'حذف')) {
-            value = null;
-          }
-          await db.prepare(`UPDATE plans SET ${field} = ? WHERE id = ?`).bind(value, plan_id).run();
-          await clearState(db, ADMIN_ID);
-          await sendMessage(ADMIN_ID, "✅ پلن با موفقیت به‌روزرسانی شد.");
-          const { msg, kb } = await renderPlansListMessage(db);
-          await sendMessage(ADMIN_ID, msg, kb);
           return new Response('OK');
         }
 		
-		// ================= مدیریت کمپین‌های اکانت تست/جشنواره =================
-        if (text === "🎁 مدیریت اکانت تست / جشنواره" && user_id === ADMIN_ID) {
-          await clearState(db, ADMIN_ID);
-          const { msg, kb } = await renderTestPlansListMessage(db);
-          await sendMessage(ADMIN_ID, msg, kb);
-          return new Response('OK');
-        }
-
-        // مراحل ساخت کمپین جدید (نام دکمه → مدت عادی → مدت ویژه اولین‌بار → سقف تکرار → تک/چندکاربره)
-        if (user_id === ADMIN_ID && state && state.step === 'WAIT_TESTPLAN_LABEL') {
-          const label = text.trim();
-          if (!label) {
-            await sendMessage(ADMIN_ID, "❌ نام دکمه نمی‌تواند خالی باشد. لطفاً دوباره ارسال کنید:", pendingMenu());
-            return new Response('OK');
-          }
-          await setState(db, ADMIN_ID, { step: 'WAIT_TESTPLAN_DAYS', new_test_plan: { label } });
-          await sendMessage(ADMIN_ID, "⏳ <b>مدت اعتبار عادی</b> این هدیه را بر حسب روز وارد کنید (مثلاً: 1):", pendingMenu());
-          return new Response('OK');
-        }
-
-        if (user_id === ADMIN_ID && state && state.step === 'WAIT_TESTPLAN_DAYS') {
-          const days = parseInt(text.trim());
-          if (isNaN(days) || days <= 0) {
-            await sendMessage(ADMIN_ID, "❌ لطفاً یک عدد معتبر برای تعداد روز وارد کنید:", pendingMenu());
-            return new Response('OK');
-          }
-          const newTestPlan = { ...state.new_test_plan, days };
-          await setState(db, ADMIN_ID, { step: 'WAIT_TESTPLAN_FIRSTDAYS', new_test_plan: newTestPlan });
-          await sendMessage(ADMIN_ID, "🆕 <b>مدت اعتبار ویژه</b> برای کسانی که اولین‌بار کلا وارد ربات شده‌اند را وارد کنید (اگر تفاوتی با مدت عادی نمی‌خواهید، عدد 0 ارسال کنید):", pendingMenu());
-          return new Response('OK');
-        }
-
-        if (user_id === ADMIN_ID && state && state.step === 'WAIT_TESTPLAN_FIRSTDAYS') {
-          const firstTimeDays = parseInt(text.trim());
-          if (isNaN(firstTimeDays) || firstTimeDays < 0) {
-            await sendMessage(ADMIN_ID, "❌ لطفاً یک عدد معتبر وارد کنید:", pendingMenu());
-            return new Response('OK');
-          }
-          const newTestPlan = { ...state.new_test_plan, first_time_days: firstTimeDays };
-          await setState(db, ADMIN_ID, { step: 'WAIT_TESTPLAN_COOLDOWN', new_test_plan: newTestPlan });
-          await sendMessage(ADMIN_ID, "🔁 <b>سقف تکرار</b> را وارد کنید؛ یعنی هر چند روز یک‌بار همین کمپین قابل دریافت مجدد باشد (مثلاً برای ماهی یک‌بار عدد 30):", pendingMenu());
-          return new Response('OK');
-        }
-
-        if (user_id === ADMIN_ID && state && state.step === 'WAIT_TESTPLAN_COOLDOWN') {
-          const cooldownDays = parseInt(text.trim());
-          if (isNaN(cooldownDays) || cooldownDays <= 0) {
-            await sendMessage(ADMIN_ID, "❌ لطفاً یک عدد معتبر (بزرگ‌تر از صفر) وارد کنید:", pendingMenu());
-            return new Response('OK');
-          }
-          const newTestPlan = { ...state.new_test_plan, cooldown_days: cooldownDays };
-          await setState(db, ADMIN_ID, { step: 'WAIT_TESTPLAN_TYPE', new_test_plan: newTestPlan });
-          const typeKb = { inline_keyboard: [
-            [{ text: "👤 تک‌کاربره", callback_data: "newtestplantype_1" }, { text: "👥 چندکاربره", callback_data: "newtestplantype_0" }]
-          ] };
-          await sendMessage(ADMIN_ID, "👥 نوع مصرف این کمپین را انتخاب کنید:", typeKb);
-          return new Response('OK');
-        }
-
-        // ویرایش مقدار یک فیلد از کمپین تست/جشنواره
-        if (user_id === ADMIN_ID && state && state.step === 'WAIT_TESTPLAN_EDIT_VALUE') {
-          const { test_plan_id, field } = state;
-          let value = text.trim();
-          const numericFields = ['days', 'first_time_days', 'cooldown_days'];
-          if (numericFields.includes(field)) {
-            const n = parseInt(value);
-            if (isNaN(n) || n < 0 || (field !== 'first_time_days' && n <= 0)) {
-              await sendMessage(ADMIN_ID, "❌ لطفاً یک عدد معتبر وارد کنید:", pendingMenu());
-              return new Response('OK');
-            }
-            value = n;
-          }
-          await db.prepare(`UPDATE test_plans SET ${field} = ? WHERE id = ?`).bind(value, test_plan_id).run();
-          await clearState(db, ADMIN_ID);
-          await sendMessage(ADMIN_ID, "✅ کمپین با موفقیت به‌روزرسانی شد.");
-          const { msg, kb } = await renderTestPlansListMessage(db);
-          await sendMessage(ADMIN_ID, msg, kb);
-          return new Response('OK');
-        }
-
-        // ================= مدیریت کدهای تخفیف =================
+		
+		// ================= مدیریت کدهای تخفیف =================
         if (text === "🎟 مدیریت کدهای تخفیف" && user_id === ADMIN_ID) {
           const { results: discounts } = await db.prepare("SELECT * FROM discounts ORDER BY id DESC").all();
           let msg = "🎟 <b>لیست کدهای تخفیف فعال:</b>\n\n";
@@ -1847,11 +1798,8 @@ export default {
 
           let targetCount = 0, targetIncome = 0;
           if (targetServices && targetServices.length > 0) {
-            const priceMapReport = await buildDaysPriceMap(db);
             targetServices.forEach(s => {
-              const priceEntryReport = priceMapReport.get(s.plan_days) || { single: 0, multi: 0 };
-              let price = s.plan_type.includes('چند کاربره') ? priceEntryReport.multi : priceEntryReport.single;
-              if (s.plan_type.includes('رایگان') || s.plan_type.includes('تست')) price = 0;
+              let price = computeServicePrice(s);
               targetCount++;
               targetIncome += price;
             });
@@ -1890,14 +1838,13 @@ export default {
              return new Response('OK');
           }
 
-          const plan = await getPlanById(db, state.plan_id);
-          if (!plan) {
-            await sendMessage(chat_id, "❌ این پلن دیگر در دسترس نیست. لطفاً دوباره از منوی «🛒 خرید سرویس» اقدام کنید.", await mainMenu(db, user_id));
-            await clearState(db, user_id);
-            return new Response('OK');
+          const purchasedPlan = getPlan(state.days);
+          let basePrice = getPlanPrice(state.days, state.user_type === '1');
+          let multiUserMessage = "";
+          if (state.user_type !== '1' && purchasedPlan && purchasedPlan.priceMultiExtra) {
+             multiUserMessage = `\n💡 <i>به دلیل انتخاب سرویس چند کاربره، مبلغ ${purchasedPlan.priceMultiExtra.toLocaleString('fa-IR')} تومان به قیمت پایه افزوده شد.</i>`;
           }
-          const basePrice = state.user_type === '1' ? (plan.price_single || 0) : (plan.price_multi || 0);
-
+          
           const discountAmount = (basePrice * discount.percent) / 100;
           const finalPrice = basePrice - discountAmount;
 
@@ -1905,10 +1852,9 @@ export default {
 
           state.step = 'WAIT_RECEIPT';
           state.timer_start = Date.now();
-          state.price_paid = finalPrice;
           await setState(db, user_id, state);
           
-          const factor = `🎉 <b>کد تخفیف ${discount.percent} درصدی اعمال شد!</b>\n\n💳 <b>فاکتور نهایی ${escapeHtml(plan.label)} (${state.type})</b>\n💵 قیمت اصلی: <s>${basePrice.toLocaleString('fa-IR')} تومان</s>\n🎁 مبلغ قابل پرداخت: <b>${finalPrice.toLocaleString('fa-IR')} تومان</b>\n\nلطفاً مبلغ فوق را واریز کرده و <b>عکس رسید تراکنش</b> را ارسال کنید:\n\n💳 <code>${CARD_NUMBER}</code>\n\n⏱ <i>شما ۱۰ دقیقه فرصت دارید.</i>`;
+          const factor = `🎉 <b>کد تخفیف ${discount.percent} درصدی اعمال شد!</b>\n\n💳 <b>فاکتور نهایی ${planDaysLabel(state.days)} (${state.type})</b>\n💵 قیمت اصلی: <s>${basePrice.toLocaleString('fa-IR')} تومان</s>\n🎁 مبلغ قابل پرداخت: <b>${finalPrice.toLocaleString('fa-IR')} تومان</b>${multiUserMessage}\n\nلطفاً مبلغ فوق را واریز کرده و <b>عکس رسید تراکنش</b> را ارسال کنید:\n\n💳 <code>${CARD_NUMBER}</code>\n\n⏱ <i>شما ۱۰ دقیقه فرصت دارید.</i>`;
           
           await sendMessage(chat_id, factor, backAndSupportKeyboard());
           return new Response('OK');
@@ -2189,7 +2135,7 @@ export default {
                const d = new Date(s.exp_date);
                if (!isNaN(d)) expView = new Intl.DateTimeFormat('fa-IR', { timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(d);
             }
-            let planPrice = await getPlanPriceByDays(db, s.plan_days, !s.plan_type.includes('چند کاربره'));
+            let planPrice = computeServicePrice(s);
             let priceText = planPrice > 0 ? `${planPrice.toLocaleString('fa-IR')} تومان` : "تست / رایگان";
 
             let srvMsg = `📦 <b>شناسه سرویس:</b> #${s.id}\n`;
@@ -2338,309 +2284,184 @@ export default {
           }
         }
 
-        // ================= مدیریت پلن‌های اشتراک (CRUD) =================
-        else if (data === 'admplanslist') {
-          if (user_id !== ADMIN_ID) return new Response('OK');
-          await clearState(db, ADMIN_ID);
-          const { msg, kb } = await renderPlansListMessage(db);
-          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: msg, reply_markup: kb, parse_mode: "HTML" });
-          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
-        }
-
-        else if (data === 'admaddplan') {
-          if (user_id !== ADMIN_ID) return new Response('OK');
-          await setState(db, ADMIN_ID, { step: 'WAIT_PLAN_LABEL' });
-          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
-          await sendMessage(ADMIN_ID, "📝 <b>ساخت پلن جدید</b>\n\nابتدا <b>نام دکمه</b> این پلن را که کاربر می‌بیند وارد کنید (مثلاً: ۳۰ روزه نامحدود):", pendingMenu());
-        }
-
-        else if (data === 'planexpiry_none') {
-          if (user_id !== ADMIN_ID || !state || state.step !== 'WAIT_PLAN_EXPIRY') return new Response('OK');
-          const np = state.new_plan;
-          const { results: maxRow } = await db.prepare("SELECT COALESCE(MAX(sort_order), 0) as m FROM plans").all();
-          const nextOrder = (maxRow && maxRow[0] ? maxRow[0].m : 0) + 1;
-          await db.prepare("INSERT INTO plans (label, days, price_single, price_multi, is_active, sort_order, expire_date_shamsi) VALUES (?, ?, ?, ?, 1, ?, NULL)")
-            .bind(np.label, np.days, np.price_single, np.price_multi, nextOrder).run();
-          await clearState(db, ADMIN_ID);
-          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
-          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `✅ پلن <b>${escapeHtml(np.label)}</b> بدون تاریخ انقضا ساخته شد.`, parse_mode: "HTML" });
-          const { msg, kb } = await renderPlansListMessage(db);
-          await sendMessage(ADMIN_ID, msg, kb);
-        }
-
-        else if (data.startsWith('admeditplanfield_')) {
-          if (user_id !== ADMIN_ID) return new Response('OK');
-          const parts = data.split('_');
-          const planId = parts[1];
-          const field = parts.slice(2).join('_'); // برای price_single / price_multi / expire_date_shamsi
-          const plan = await getPlanById(db, planId);
-          if (!plan) {
-            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ پلن یافت نشد.", show_alert: true });
-            return new Response('OK');
-          }
-          await setState(db, ADMIN_ID, { step: 'WAIT_PLAN_EDIT_VALUE', plan_id: planId, field });
-          const fieldLabels = { label: "نام دکمه", days: "مدت اعتبار (روز)", price_single: "قیمت تک‌کاربره (تومان)", price_multi: "قیمت چندکاربره (تومان)", expire_date_shamsi: "تاریخ پایان پیشنهاد (شمسی) - برای حذف تاریخ، علامت - را ارسال کنید" };
-          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
-          await sendMessage(ADMIN_ID, `✏️ مقدار جدید برای <b>${fieldLabels[field] || field}</b> پلن #${plan.id} را وارد کنید:\n\nمقدار فعلی: <code>${escapeHtml(String(plan[field] ?? '-'))}</code>`, pendingMenu());
-        }
-
-        else if (data.startsWith('admeditplan_')) {
-          if (user_id !== ADMIN_ID) return new Response('OK');
-          const planId = data.split('_')[1];
-          const plan = await getPlanById(db, planId);
-          if (!plan) {
-            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ پلن یافت نشد.", show_alert: true });
-            return new Response('OK');
-          }
-          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
-          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `✏️ <b>ویرایش پلن #${plan.id} - ${escapeHtml(plan.label)}</b>\n\nکدام مقدار را می‌خواهید ویرایش کنید؟`, reply_markup: planEditFieldsKeyboard(plan.id), parse_mode: "HTML" });
-        }
-
-        else if (data.startsWith('admtoggleplan_')) {
-          if (user_id !== ADMIN_ID) return new Response('OK');
-          const planId = data.split('_')[1];
-          const plan = await getPlanById(db, planId);
-          if (!plan) {
-            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ پلن یافت نشد.", show_alert: true });
-            return new Response('OK');
-          }
-          await db.prepare("UPDATE plans SET is_active = ? WHERE id = ?").bind(plan.is_active ? 0 : 1, plan.id).run();
-          await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: plan.is_active ? "🚫 پلن غیرفعال شد." : "✅ پلن فعال شد." });
-          const { msg, kb } = await renderPlansListMessage(db);
-          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: msg, reply_markup: kb, parse_mode: "HTML" });
-        }
-
-        else if (data.startsWith('admdelplanconfirm_')) {
-          if (user_id !== ADMIN_ID) return new Response('OK');
-          const planId = data.split('_')[1];
-          await db.prepare("DELETE FROM plans WHERE id = ?").bind(planId).run();
-          await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "🗑 پلن حذف شد." });
-          const { msg, kb } = await renderPlansListMessage(db);
-          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: msg, reply_markup: kb, parse_mode: "HTML" });
-        }
-
-        // ================= مدیریت کمپین‌های اکانت تست/جشنواره (CRUD) =================
-        else if (data === 'admtestplanslist') {
-          if (user_id !== ADMIN_ID) return new Response('OK');
-          await clearState(db, ADMIN_ID);
-          const { msg, kb } = await renderTestPlansListMessage(db);
-          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: msg, reply_markup: kb, parse_mode: "HTML" });
-          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
-        }
-
-        else if (data === 'admaddtestplan') {
-          if (user_id !== ADMIN_ID) return new Response('OK');
-          await setState(db, ADMIN_ID, { step: 'WAIT_TESTPLAN_LABEL' });
-          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
-          await sendMessage(ADMIN_ID, "📝 <b>ساخت کمپین جدید (تست/جشنواره/...)</b>\n\nابتدا <b>نام دکمه</b> این کمپین را که کاربر می‌بیند وارد کنید (مثلاً: 🎉 جشنواره ویژه):", pendingMenu());
-        }
-
-        else if (data.startsWith('newtestplantype_')) {
-          if (user_id !== ADMIN_ID || !state || state.step !== 'WAIT_TESTPLAN_TYPE') return new Response('OK');
-          const isSingle = data.split('_')[1] === '1' ? 1 : 0;
-          const ntp = state.new_test_plan;
-          const { results: maxRow } = await db.prepare("SELECT COALESCE(MAX(sort_order), 0) as m FROM test_plans").all();
-          const nextOrder = (maxRow && maxRow[0] ? maxRow[0].m : 0) + 1;
-          await db.prepare("INSERT INTO test_plans (label, days, first_time_days, cooldown_days, is_single, is_active, sort_order) VALUES (?, ?, ?, ?, ?, 1, ?)")
-            .bind(ntp.label, ntp.days, ntp.first_time_days || 0, ntp.cooldown_days, isSingle, nextOrder).run();
-          await clearState(db, ADMIN_ID);
-          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
-          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `✅ کمپین <b>${escapeHtml(ntp.label)}</b> با موفقیت ساخته شد و اکنون فعال است.`, parse_mode: "HTML" });
-          const { msg, kb } = await renderTestPlansListMessage(db);
-          await sendMessage(ADMIN_ID, msg, kb);
-        }
-
-        else if (data.startsWith('admedittestplanfield_')) {
-          if (user_id !== ADMIN_ID) return new Response('OK');
-          const parts = data.split('_');
-          const testPlanId = parts[1];
-          const field = parts.slice(2).join('_');
-          const testPlan = await getTestPlanById(db, testPlanId);
-          if (!testPlan) {
-            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ کمپین یافت نشد.", show_alert: true });
-            return new Response('OK');
-          }
-          await setState(db, ADMIN_ID, { step: 'WAIT_TESTPLAN_EDIT_VALUE', test_plan_id: testPlanId, field });
-          const fieldLabels = { label: "نام دکمه", days: "مدت اعتبار عادی (روز)", first_time_days: "مدت ویژه اولین‌بار ورود به ربات (روز، ۰=بدون تفاوت)", cooldown_days: "سقف تکرار (هر چند روز)" };
-          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
-          await sendMessage(ADMIN_ID, `✏️ مقدار جدید برای <b>${fieldLabels[field] || field}</b> کمپین #${testPlan.id} را وارد کنید:\n\nمقدار فعلی: <code>${escapeHtml(String(testPlan[field] ?? '-'))}</code>`, pendingMenu());
-        }
-
-        else if (data.startsWith('admedittestplan_')) {
-          if (user_id !== ADMIN_ID) return new Response('OK');
-          const testPlanId = data.split('_')[1];
-          const testPlan = await getTestPlanById(db, testPlanId);
-          if (!testPlan) {
-            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ کمپین یافت نشد.", show_alert: true });
-            return new Response('OK');
-          }
-          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
-          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `✏️ <b>ویرایش کمپین #${testPlan.id} - ${escapeHtml(testPlan.label)}</b>\n\nکدام مقدار را می‌خواهید ویرایش کنید؟ (برای تغییر تک/چندکاربره از دکمه مربوطه در لیست کمپین‌ها استفاده کنید)`, reply_markup: testPlanEditFieldsKeyboard(testPlan.id), parse_mode: "HTML" });
-        }
-
-        else if (data.startsWith('admtoggletestplantype_')) {
-          if (user_id !== ADMIN_ID) return new Response('OK');
-          const testPlanId = data.split('_')[1];
-          const testPlan = await getTestPlanById(db, testPlanId);
-          if (!testPlan) {
-            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ کمپین یافت نشد.", show_alert: true });
-            return new Response('OK');
-          }
-          await db.prepare("UPDATE test_plans SET is_single = ? WHERE id = ?").bind(testPlan.is_single ? 0 : 1, testPlan.id).run();
-          await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: testPlan.is_single ? "✅ به چندکاربره تغییر کرد." : "✅ به تک‌کاربره تغییر کرد." });
-          const { msg, kb } = await renderTestPlansListMessage(db);
-          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: msg, reply_markup: kb, parse_mode: "HTML" });
-        }
-
-        else if (data.startsWith('admtoggletestplan_')) {
-          if (user_id !== ADMIN_ID) return new Response('OK');
-          const testPlanId = data.split('_')[1];
-          const testPlan = await getTestPlanById(db, testPlanId);
-          if (!testPlan) {
-            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ کمپین یافت نشد.", show_alert: true });
-            return new Response('OK');
-          }
-          await db.prepare("UPDATE test_plans SET is_active = ? WHERE id = ?").bind(testPlan.is_active ? 0 : 1, testPlan.id).run();
-          await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: testPlan.is_active ? "🚫 کمپین غیرفعال شد." : "✅ کمپین فعال شد." });
-          const { msg, kb } = await renderTestPlansListMessage(db);
-          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: msg, reply_markup: kb, parse_mode: "HTML" });
-        }
-
-        else if (data.startsWith('admdeltestplanconfirm_')) {
-          if (user_id !== ADMIN_ID) return new Response('OK');
-          const testPlanId = data.split('_')[1];
-          await db.prepare("DELETE FROM test_plans WHERE id = ?").bind(testPlanId).run();
-          await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "🗑 کمپین حذف شد." });
-          const { msg, kb } = await renderTestPlansListMessage(db);
-          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: msg, reply_markup: kb, parse_mode: "HTML" });
-        }
-
-        else if (data.startsWith('admdeltestplan_')) {
-          if (user_id !== ADMIN_ID) return new Response('OK');
-          const testPlanId = data.split('_')[1];
-          const testPlan = await getTestPlanById(db, testPlanId);
-          if (!testPlan) {
-            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ کمپین یافت نشد.", show_alert: true });
-            return new Response('OK');
-          }
-          const confirmKb = { inline_keyboard: [
-            [{ text: "✅ بله، حذف شود", callback_data: `admdeltestplanconfirm_${testPlan.id}` }],
-            [{ text: "🚫 نه، فقط غیرفعال کن", callback_data: `admtoggletestplan_${testPlan.id}` }],
-            [{ text: "❌ انصراف", callback_data: "admtestplanslist" }]
-          ] };
-          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
-          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `⚠️ آیا از <b>حذف کامل</b> کمپین #${testPlan.id} - ${escapeHtml(testPlan.label)} مطمئن هستید؟\n\n💡 اگر فقط می‌خواهید موقتاً از دسترس خارج شود (و بعداً دوباره فعالش کنید)، بهتر است به‌جای حذف، آن را «غیرفعال» کنید.`, reply_markup: confirmKb, parse_mode: "HTML" });
-        }
-
-        else if (data.startsWith('admdelplan_')) {
-          if (user_id !== ADMIN_ID) return new Response('OK');
-          const planId = data.split('_')[1];
-          const plan = await getPlanById(db, planId);
-          if (!plan) {
-            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ پلن یافت نشد.", show_alert: true });
-            return new Response('OK');
-          }
-          const confirmKb = { inline_keyboard: [
-            [{ text: "✅ بله، حذف شود", callback_data: `admdelplanconfirm_${plan.id}` }],
-            [{ text: "🚫 نه، فقط غیرفعال کن", callback_data: `admtoggleplan_${plan.id}` }],
-            [{ text: "❌ انصراف", callback_data: "admplanslist" }]
-          ] };
-          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
-          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `⚠️ آیا از <b>حذف کامل</b> پلن #${plan.id} - ${escapeHtml(plan.label)} مطمئن هستید؟\n\n💡 اگر فقط می‌خواهید موقتاً از دسترس خارج شود (و بعداً دوباره فعالش کنید)، بهتر است به‌جای حذف، آن را «غیرفعال» کنید.`, reply_markup: confirmKb, parse_mode: "HTML" });
-        }
-
         else if (data.startsWith('plan_')) {
-          const planId = data.split('_')[1];
-          const plan = await getPlanById(db, planId);
-          if (!plan || !plan.is_active) {
-            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ این پلن دیگر در دسترس نیست. لطفاً از منوی خرید سرویس مجدداً اقدام کنید.", show_alert: true });
+          const days = data.split('_')[1];
+          const chosenPlan = getPlan(days);
+          if (!chosenPlan || !chosenPlan.enabled) {
+            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "⛔ این پلن در حال حاضر غیرفعال است.", show_alert: true });
             return new Response('OK');
           }
-          state.plan_id = plan.id;
-          state.plan_label = plan.label;
-          state.days = plan.days;
+          state.days = days;
           state.hours = 0;
           state.is_test = false;
-          await setState(db, user_id, state);
 
-          // 💡 نکته: اگر قیمت یک حالت (تک/چندکاربره) صفر وارد شده باشد، آن حالت غیرفعال نمی‌شود بلکه «رایگان» است و بدون نیاز به رسید مستقیم برای ادمین ارسال می‌شود.
-          const typeButtons = [
-            { text: `👤 یک کاربره (${plan.price_single > 0 ? plan.price_single.toLocaleString('fa-IR') + ' ت' : 'رایگان'})`, callback_data: "users_1" },
-            { text: `👥 چند کاربره (${plan.price_multi > 0 ? plan.price_multi.toLocaleString('fa-IR') + ' ت' : 'رایگان'})`, callback_data: "users_multi" }
-          ];
-          const kb = { inline_keyboard: [typeButtons] };
-          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `📦 پلن انتخابی: <b>${escapeHtml(plan.label)}</b>\n\n👥 نوع مصرف را مشخص کنید:`, reply_markup: kb, parse_mode: "HTML" });
+          // بسته به تنظیم ادمین برای این پلن، ممکن است انتخاب تک/چندکاربره اصلاً از کاربر پرسیده نشود
+          if (chosenPlan.userTypeMode === 'single') {
+            state.user_type = '1';
+            state.type = `${chosenPlan.text} (تک کاربره)`;
+            await proceedToDiscountStep(db, user_id, chat_id, msg_id, state);
+          } else if (chosenPlan.userTypeMode === 'multi') {
+            state.user_type = '0';
+            state.type = `${chosenPlan.text} (چند کاربره)`;
+            await proceedToDiscountStep(db, user_id, chat_id, msg_id, state);
+          } else {
+            await setState(db, user_id, state);
+            const kb = { 
+              inline_keyboard: [
+                [{ text: "👥 چند کاربره", callback_data: "users_multi" }, { text: "👤 یک کاربره", callback_data: "users_1" }]
+              ] 
+            };
+            await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: "👥 نوع مصرف را مشخص کنید:", reply_markup: kb, parse_mode: "HTML" });
+          }
         }
 
         else if (data.startsWith('users_')) {
           const userType = data.split('_')[1];
           state.user_type = userType;
-          state.type = (userType === '1') ? "تک کاربره (نامحدود)" : "چند کاربره (نامحدود)";
+          const chosenPlan = getPlan(state.days);
+          const planLabel = chosenPlan ? chosenPlan.text : "نامحدود";
+          state.type = (userType === '1') ? `${planLabel} (تک کاربره)` : `${planLabel} (چند کاربره)`;
+          await proceedToDiscountStep(db, user_id, chat_id, msg_id, state);
+        }
 
-          const planForType = await getPlanById(db, state.plan_id);
-          const planPriceForType = planForType ? (userType === '1' ? (planForType.price_single || 0) : (planForType.price_multi || 0)) : 0;
+        // ================= دکمه بی‌اثر (فقط برای جداکننده‌های بصری در پنل تنظیمات) =================
+        else if (data === 'noop') {
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+        }
 
-          // ================= مسیر رایگان: اگر قیمت این حالت صفر باشد، بدون کد تخفیف/رسید مستقیم برای تایید ادمین می‌رود =================
-          if (planForType && planPriceForType === 0) {
-            state.step = 'PENDING_ADMIN';
-            state.price_paid = 0;
-            state.admin_notified_as_text = true;
-            await setState(db, user_id, state);
+        // ================= بستن پنل‌های تنظیمات =================
+        else if (data === 'cfgfree_close') {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          await callTelegram('deleteMessage', { chat_id, message_id: msg_id }).catch(() => {});
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+        }
 
-            const uRow = await db.prepare("SELECT first_name, username FROM users WHERE user_id = ?").bind(user_id).first();
-            const userLink = getUserLink(user_id, uRow ? uRow.first_name : "کاربر", uRow ? uRow.username : "");
-            const lastSrv = await db.prepare("SELECT cf_domain FROM services WHERE user_id = ? ORDER BY id DESC LIMIT 1").bind(user_id).first();
-            const workerText = lastSrv ? `🌐 <b>ورکر فعلی کاربر:</b> <code>${lastSrv.cf_domain}</code>\n` : `🌐 <b>ورکر فعلی کاربر:</b> ندارد (نیاز به ثبت ورکر جدید)\n`;
-            const isSingle = state.type.includes('یک کاربره') ? '1' : '0';
+        // ================= روشن/خاموش کردن اکانت تست =================
+        else if (data === 'cfgfree_toggle_test') {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          SETTINGS.freeAccount.test.enabled = !SETTINGS.freeAccount.test.enabled;
+          await saveSettings(db);
+          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: renderFreeAccountPanel(), reply_markup: freeAccountKeyboard(), parse_mode: "HTML" });
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+        }
 
-            const freeText = `🆓 <b>کاربر ${userLink} از این پنل رایگان استفاده کرد!</b>\n🆔 آیدی: <code>${user_id}</code>\n📦 پلن: ${escapeHtml(planForType.label)} - ${state.type}\n💵 مبلغ: رایگان (۰ تومان)\n${workerText}`;
-            const admMarkup = { inline_keyboard: [
-                [{ text: "✅ تایید و شارژ اکانت (رایگان)", callback_data: `admaprv_buy_${user_id}_${state.days}_0_${isSingle}` }],
-                [{ text: "❌ رد کردن درخواست", callback_data: `admrej_${user_id}` }]
-            ] };
-            const adminMsgRes = await callTelegram('sendMessage', { chat_id: ADMIN_ID, text: freeText, reply_markup: admMarkup, parse_mode: "HTML" });
-            if (adminMsgRes && adminMsgRes.ok) state.admin_message_id = adminMsgRes.result.message_id;
-            await setState(db, user_id, state);
+        // ================= روشن/خاموش کردن جشنواره =================
+        else if (data === 'cfgfree_toggle_festival') {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const willEnable = !SETTINGS.freeAccount.festival.enabled;
+          SETTINGS.freeAccount.festival.enabled = willEnable;
+          // با هر بار روشن‌شدن جدید جشنواره، یک شناسهٔ دوره جدید ثبت می‌شود تا کاربرانی که در دور قبلی هدیه گرفته‌اند، دوباره بتوانند شرکت کنند
+          if (willEnable) SETTINGS.freeAccount.festival.enabledAt = String(Date.now());
+          await saveSettings(db);
+          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: renderFreeAccountPanel(), reply_markup: freeAccountKeyboard(), parse_mode: "HTML" });
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: willEnable ? "🎉 جشنواره روشن شد؛ اکانت تست تا زمان خاموش‌شدن جشنواره در دسترس نیست." : "جشنواره خاموش شد.", show_alert: true });
+        }
 
-            await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `🆓 این پلن رایگان است؛ درخواست شما مستقیماً برای ادمین ارسال شد و نیازی به پرداخت/رسید نیست.`, parse_mode: "HTML" });
-            await sendMessage(user_id, "✅ درخواست شما ثبت شد و در صف بررسی قرار گرفت. لطفاً تا پاسخ پشتیبانی شکیبا باشید.", pendingMenu());
-            return new Response('OK');
+        // ================= تغییر نوع تک/چندکاربره اکانت تست یا جشنواره =================
+        else if (data === 'cfgfree_usertype_test' || data === 'cfgfree_usertype_festival') {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const key = data.endsWith('festival') ? 'festival' : 'test';
+          SETTINGS.freeAccount[key].userType = SETTINGS.freeAccount[key].userType === 'single' ? 'multi' : 'single';
+          await saveSettings(db);
+          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: renderFreeAccountPanel(), reply_markup: freeAccountKeyboard(), parse_mode: "HTML" });
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+        }
+
+        // ================= درخواست مقدار عددی جدید (روز/فاصله دریافت مجدد) برای اکانت تست یا جشنواره =================
+        else if (data === 'cfgfree_days_test' || data === 'cfgfree_days_festival' || data === 'cfgfree_cooldown_test') {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          let cfgType, promptText;
+          if (data === 'cfgfree_days_test') { cfgType = 'test_days'; promptText = "📅 تعداد روزهای اکانت تست را به‌صورت عدد ارسال کنید:"; }
+          else if (data === 'cfgfree_days_festival') { cfgType = 'festival_days'; promptText = "📅 تعداد روزهای هدیه جشنواره را به‌صورت عدد ارسال کنید:"; }
+          else { cfgType = 'test_cooldown'; promptText = "🔁 فاصله زمانی دریافت مجدد اکانت تست را به روز ارسال کنید (برای غیرفعال کردن محدودیت، عدد ۰ بفرستید):"; }
+          await setState(db, ADMIN_ID, { step: 'WAIT_CFG_INPUT', cfg_type: cfgType });
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+          await sendMessage(ADMIN_ID, promptText, pendingMenu());
+        }
+
+        // ================= درخواست متن جدید (دکمه/پیام) برای اکانت تست یا جشنواره =================
+        else if (data === 'cfgfree_btntext_test' || data === 'cfgfree_msgtext_test' || data === 'cfgfree_btntext_festival' || data === 'cfgfree_msgtext_festival') {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const isBtn = data.includes('btntext');
+          const isFestival = data.endsWith('festival');
+          const cfgType = `${isFestival ? 'festival' : 'test'}_${isBtn ? 'btn' : 'msg'}`;
+          await setState(db, ADMIN_ID, { step: 'WAIT_CFG_INPUT', cfg_type: cfgType });
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+          await sendMessage(ADMIN_ID, isBtn ? "✏️ متن جدید دکمه را ارسال کنید:" : "✏️ متن جدید پیام هدیه را ارسال کنید:", pendingMenu());
+        }
+
+        // ================= بازگشت به لیست پلن‌ها =================
+        else if (data === 'cfgplan_list') {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: "🛍 <b>مدیریت پلن‌های اشتراک</b>\n\nیکی از پلن‌ها را برای ویرایش انتخاب کنید:", reply_markup: plansListKeyboard(), parse_mode: "HTML" });
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+        }
+
+        // ================= باز کردن جزئیات یک پلن =================
+        else if (data.startsWith('cfgplan_open_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const days = data.split('_')[2];
+          const p = getPlan(days);
+          if (!p) { await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "پلن یافت نشد", show_alert: true }); return new Response('OK'); }
+          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: planDetailMsg(p), reply_markup: planDetailKeyboard(days), parse_mode: "HTML" });
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+        }
+
+        // ================= فعال/غیرفعال کردن یک پلن =================
+        else if (data.startsWith('cfgplan_toggle_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const days = data.split('_')[2];
+          const p = getPlan(days);
+          if (p) { p.enabled = !p.enabled; await saveSettings(db); }
+          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: planDetailMsg(p), reply_markup: planDetailKeyboard(days), parse_mode: "HTML" });
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+        }
+
+        // ================= تغییر نوع مجاز خرید یک پلن (تک/چند/هردو) =================
+        else if (data.startsWith('cfgplan_usertype_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const days = data.split('_')[2];
+          const p = getPlan(days);
+          if (p) {
+            p.userTypeMode = p.userTypeMode === 'both' ? 'single' : (p.userTypeMode === 'single' ? 'multi' : 'both');
+            await saveSettings(db);
           }
+          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: planDetailMsg(p), reply_markup: planDetailKeyboard(days), parse_mode: "HTML" });
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+        }
 
-          state.step = 'WAIT_DISCOUNT_CODE'; // رفتن به مرحله کد تخفیف
-          await setState(db, user_id, state);
-          
-          const kb = {
-             inline_keyboard: [[{ text: "➡️ ادامه بدون کد تخفیف (صدور فاکتور)", callback_data: "skip_discount" }]]
+        // ================= درخواست مقدار جدید (متن/قیمت/هزینه چندکاربره) برای یک پلن =================
+        else if (data.startsWith('cfgplan_text_') || data.startsWith('cfgplan_price_') || data.startsWith('cfgplan_multiextra_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const parts = data.split('_');
+          const field = parts[1]; // text | price | multiextra
+          const days = parts[2];
+          const prompts = {
+            text: "✏️ عنوان/متن جدید پلن را ارسال کنید:",
+            price: "💵 قیمت پایه جدید را به تومان (فقط عدد) ارسال کنید:",
+            multiextra: "➕ هزینه اضافه برای حالت چندکاربره را به تومان (فقط عدد) ارسال کنید:"
           };
-          
-          await callTelegram('editMessageText', { 
-             chat_id, 
-             message_id: msg_id, 
-             text: "🏷 <b>کد تخفیف</b>\n\nاگر کد تخفیفی دارید، لطفاً آن را تایپ و ارسال کنید. در غیر این صورت برای دریافت فاکتور روی دکمه زیر کلیک کنید:", 
-             reply_markup: kb, 
-             parse_mode: "HTML" 
-          });
+          await setState(db, ADMIN_ID, { step: 'WAIT_CFG_INPUT', cfg_type: `plan_${field}`, cfg_days: days });
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+          await sendMessage(ADMIN_ID, prompts[field], pendingMenu());
         }
 
         // ================= پردازش دکمه ادامه بدون تخفیف =================
         else if (data === 'skip_discount') {
           if (!state || state.step !== 'WAIT_DISCOUNT_CODE') return new Response('OK');
-
-          const plan = await getPlanById(db, state.plan_id);
-          if (!plan) {
-            await sendMessage(chat_id, "❌ این پلن دیگر در دسترس نیست. لطفاً دوباره از منوی «🛒 خرید سرویس» اقدام کنید.", await mainMenu(db, user_id));
-            await clearState(db, user_id);
-            return new Response('OK');
-          }
-
+          
           state.step = 'WAIT_RECEIPT';
           state.timer_start = Date.now();
-          const planPrice = state.user_type === '1' ? (plan.price_single || 0) : (plan.price_multi || 0);
-          state.price_paid = planPrice;
           await setState(db, user_id, state);
-
-          const factor = `💳 <b>فاکتور سرویس ${escapeHtml(plan.label)} (${state.type})</b>\n💵 مبلغ قابل پرداخت: <b>${planPrice.toLocaleString('fa-IR')} تومان</b>\n\nلطفاً مبلغ فوق را واریز کرده و <b>عکس رسید تراکنش</b> را همینجا ارسال کنید:\n\n💳 <code>${CARD_NUMBER}</code>\n\n⏱ <i>شما ۱۰ دقیقه فرصت دارید.</i>`;
+          
+          const skipDiscountPlan = getPlan(state.days);
+          let planPrice = getPlanPrice(state.days, state.user_type === '1');
+          let multiUserMessage = "";
+          if (state.user_type !== '1' && skipDiscountPlan && skipDiscountPlan.priceMultiExtra) {
+            multiUserMessage = `\n💡 <i>به دلیل انتخاب سرویس چند کاربره، مبلغ ${skipDiscountPlan.priceMultiExtra.toLocaleString('fa-IR')} تومان به قیمت پایه افزوده شد.</i>`;
+          }
+          
+          const factor = `💳 <b>فاکتور سرویس ${planDaysLabel(state.days)} (${state.type})</b>\n💵 مبلغ قابل پرداخت: <b>${planPrice.toLocaleString('fa-IR')} تومان</b>${multiUserMessage}\n\nلطفاً مبلغ فوق را واریز کرده و <b>عکس رسید تراکنش</b> را همینجا ارسال کنید:\n\n💳 <code>${CARD_NUMBER}</code>\n\n⏱ <i>شما ۱۰ دقیقه فرصت دارید.</i>`;
           await callTelegram('deleteMessage', { chat_id, message_id: msg_id });
           await sendMessage(chat_id, factor, backAndSupportKeyboard());
           return new Response('OK');
@@ -2669,8 +2490,8 @@ export default {
           const hours = parts[3];
           const action = parts[4];
           const userType = parts[5];
-          const testPlanIdRetry = parts[6] && parts[6] !== '0' ? parts[6] : null;
-          await setState(db, ADMIN_ID, { step: 'WAIT_DOMAIN', target_user: targetUser, days, hours, action, user_type: userType, test_plan_id: testPlanIdRetry });
+          const freeMode = parts[6] || 'test';
+          await setState(db, ADMIN_ID, { step: 'WAIT_DOMAIN', target_user: targetUser, days, hours, action, user_type: userType, free_mode: freeMode });
           await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
           await sendMessage(ADMIN_ID, `🔗 لطفاً <b>آدرس دامنه ورکر (لینک اصلی)</b> را برای اختصاص دادن به کاربر <code>${targetUser}</code> تایپ و ارسال کنید:`, pendingMenu());
         }
@@ -2707,7 +2528,7 @@ export default {
           const days = parts[3];
           const hours = parts[4];
           const userType = parts[5] || '1';
-          const testPlanId = parts[6] || null; // فقط برای action=test، شناسه کمپین هدیه/تست
+          const freeMode = parts[6] || 'test'; // 'test' یا 'festival' (فقط زمانی که action === 'test' معنا دارد)
 
           const lastService = await db.prepare("SELECT cf_domain FROM services WHERE user_id = ? ORDER BY id DESC LIMIT 1").bind(targetUser).first();
           let preSelectedDomain = lastService ? lastService.cf_domain : null;
@@ -2728,7 +2549,6 @@ export default {
               if (action === 'test') {
                 applyHours = parseInt(applyDays) * 24;
                 applyDays = 0;
-                // applySingle از تنظیمات همان کمپین تست/جشنواره خوانده می‌شود (دیگر همیشه تک‌کاربره نیست)
               }
 
               let normalizedDomain = preSelectedDomain.trim();
@@ -2739,12 +2559,16 @@ export default {
               
               if (cfRes.success && cfRes.subLink) {
                   const shamsiNow = getShamsiNow();
-                  const planName = action === 'test' ? `تست ${days} روزه (${applySingle ? 'یک کاربره' : 'چند کاربره'})` : `سرویس ${planDaysLabel(days)} (${applySingle ? 'یک کاربره' : 'چند کاربره'})`;
-                  const planTypeDb = action === 'test' ? `اکانت تست (رایگان) - ${applySingle ? 'یک کاربره' : 'چند کاربره'}` : (applySingle ? 'یک کاربره' : 'چند کاربره');
+                  const freeModeLabel = freeMode === 'festival' ? 'جشنواره' : 'تست';
+                  const planName = action === 'test' ? `${freeModeLabel} ${days} روزه (${applySingle ? 'یک کاربره' : 'چند کاربره'})` : `سرویس ${planDaysLabel(days)} (${applySingle ? 'یک کاربره' : 'چند کاربره'})`;
+                  const planTypeDb = action === 'test' ? `اکانت ${freeModeLabel} (رایگان) - ${applySingle ? 'یک کاربره' : 'چند کاربره'}` : (applySingle ? 'یک کاربره' : 'چند کاربره');
 
-                  if (action === 'test' && testPlanId) {
-                    await db.prepare("INSERT INTO test_claims (user_id, test_plan_id, last_claim_shamsi, claim_count) VALUES (?, ?, ?, 1) ON CONFLICT(user_id, test_plan_id) DO UPDATE SET last_claim_shamsi = excluded.last_claim_shamsi, claim_count = claim_count + 1").bind(targetUser, testPlanId, getShamsiDateOnly()).run();
-                    await db.prepare("INSERT INTO users (user_id, first_gift_used) VALUES (?, 1) ON CONFLICT(user_id) DO UPDATE SET first_gift_used = 1").bind(targetUser).run();
+                  if (action === 'test') {
+                    if (freeMode === 'festival') {
+                      await db.prepare("INSERT INTO users (user_id, last_festival_claim) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_festival_claim = excluded.last_festival_claim").bind(targetUser, SETTINGS.freeAccount.festival.enabledAt || 'on').run();
+                    } else {
+                      await db.prepare("INSERT INTO users (user_id, last_test_date) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_test_date = excluded.last_test_date").bind(targetUser, getShamsiDateOnly()).run();
+                    }
                   } 
                   
                   await db.prepare("INSERT INTO services (user_id, plan_days, plan_type, cf_domain, sub_link, exp_date, status, purchase_date_shamsi) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
@@ -2776,7 +2600,7 @@ export default {
               await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: "✅ درخواست تایید شد. کاربر ورکری ندارد، لطفاً ورکر جدید را وارد کنید.", parse_mode: "HTML" });
           }
 
-          await setState(db, ADMIN_ID, { step: 'WAIT_DOMAIN', target_user: targetUser, days, hours, action, user_type: userType, test_plan_id: testPlanId });
+          await setState(db, ADMIN_ID, { step: 'WAIT_DOMAIN', target_user: targetUser, days, hours, action, user_type: userType, free_mode: freeMode });
           
           let admMsg = `🔗 کاربر جدید است. لطفاً <b>آدرس دامنه ورکر (لینک اصلی)</b> را برای اختصاص دادن به این کاربر تایپ و ارسال کنید.\n\n⌨️ تا ارسال آدرس ورکر یا لغو عملیات، فقط از دکمهٔ «❌ لغو عملیات» پایین صفحه استفاده کنید.`;
           await sendMessage(ADMIN_ID, admMsg, pendingMenu());
