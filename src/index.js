@@ -453,6 +453,14 @@ export default {
         const username = msg.from.username || "";
         let state = await getState(db, user_id);
 
+
+		// 👇 این ۳ خط را دقیقاً اینجا اضافه کنید 👇
+        if (msg.video && user_id === ADMIN_ID) {
+            await sendMessage(chat_id, `🎥 <b>شناسه این ویدیو (file_id) مخصوص ربات شما:</b>\n\n<code>${msg.video.file_id}</code>`);
+            return new Response('OK');
+        }
+        // 👆 پایان کد اضافه شده 👆		  
+
         // بررسی اینکه آیا این کاربر کاملاً جدید است (برای سیستم رفرال)
         const checkIsNew = await db.prepare("SELECT user_id FROM users WHERE user_id = ?").bind(user_id).first();
         const isBrandNewUser = !checkIsNew;
