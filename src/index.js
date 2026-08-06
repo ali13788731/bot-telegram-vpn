@@ -2,8 +2,6 @@
 // 🔒 هیچ مقدار حساسی اینجا هاردکد نشده؛ همه از env (Cloudflare Secrets) خوانده می‌شوند.
 // این متغیرها در ابتدای هر fetch() توسط loadConfig(env) مقداردهی می‌شوند.
 let TOKEN, ADMIN_ID, CARD_NUMBER, SUPPORT_ID, CF_ADMIN_PATH, CF_ADMIN_TOKEN, WEBHOOK_SECRET;
-const PIC_UPDATE_SUB = "https://example.com/update_sub_tutorial.jpg";
-const PIC_V2BOX_SETUP = "https://example.com/v2box_setup_tutorial.jpg";
 
 function loadConfig(env) {
   TOKEN = env.BOT_TOKEN;
