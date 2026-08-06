@@ -451,15 +451,7 @@ export default {
         const text = msg.text || "";
         const first_name = msg.from.first_name || "کاربر";
         const username = msg.from.username || "";
-        let state = await getState(db, user_id);
-
-
-		// 👇 این ۳ خط را دقیقاً اینجا اضافه کنید 👇
-        if (msg.video && user_id === ADMIN_ID) {
-            await sendMessage(chat_id, `🎥 <b>شناسه این ویدیو (file_id) مخصوص ربات شما:</b>\n\n<code>${msg.video.file_id}</code>`);
-            return new Response('OK');
-        }
-        // 👆 پایان کد اضافه شده 👆		  
+        let state = await getState(db, user_id); 
 
         // بررسی اینکه آیا این کاربر کاملاً جدید است (برای سیستم رفرال)
         const checkIsNew = await db.prepare("SELECT user_id FROM users WHERE user_id = ?").bind(user_id).first();
@@ -1053,7 +1045,7 @@ export default {
           return new Response('OK');
         }
         if (text === "🚀 آموزش برنامه v2ray برای نصب کانفیگ") {
-          const v2rayFileId = "BAACAgQAAxkBAAEtRShqdE0hkPyjv56Zj5LVELpnsOIw3wACBx8AAlZvoVOrEkJnzs9sFT0E";
+          const v2rayFileId = "BAACAgQAAxkBAAIJqWp0UTm4vjXy1eE1YlHgo1nf929iAAIHHwACVm-hU1oVDnIo-uFzPQQ";
           const res = await fetch(`https://api.telegram.org/bot${TOKEN}/sendVideo`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1063,7 +1055,7 @@ export default {
           return new Response('OK');
         }
         if (text === "📥 آموزش برنامه v2box برای نصب کانفیگ") {
-          const v2boxFileId = "BAACAgQAAxkBAAEtRSZqdE0EhRYV4w4BZ6w7AAFUDw7Q2ikAAgYfAAJWb6FTbVW_8ce4y249BA";
+          const v2boxFileId = "BAACAgQAAxkBAAIJo2p0UFDzSabd4rGGZr1lk6AQRg4SAAIGHwACVm-hU3EXI5PaaswwPQQ";
           const res = await fetch(`https://api.telegram.org/bot${TOKEN}/sendVideo`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
