@@ -64,6 +64,29 @@ async function buildDaysPriceMap(db) {
   return map;
 }
 
+// ================= مدیریت کمپین‌های اکانت رایگان/تست (کاملاً داینامیک - از جدول test_plans در دیتابیس خوانده می‌شود) =================
+// می‌تواند همزمان چند کمپین مستقل داشته باشد (مثلاً هم «اکانت تست» عادی، هم یک کمپین جداگانه «جشنواره»)
+// هرکدام دکمه/مدت عادی/مدت ویژه اولین‌بار/سقف تکرار/تک‌کاربره یا چندکاربره بودن و فعال/غیرفعال بودن مستقل خودشان را دارند.
+
+async function getActiveTestPlans(db) {
+  const { results } = await db.prepare("SELECT * FROM test_plans WHERE is_active = 1 ORDER BY sort_order ASC, id ASC").all();
+  return results || [];
+}
+
+async function getAllTestPlans(db) {
+  const { results } = await db.prepare("SELECT * FROM test_plans ORDER BY sort_order ASC, id ASC").all();
+  return results || [];
+}
+
+async function getTestPlanById(db, id) {
+  return await db.prepare("SELECT * FROM test_plans WHERE id = ?").bind(id).first();
+}
+
+// پیدا کردن کمپین فعال بر اساس متن دکمه‌ای که کاربر زده (چون دکمه‌های منو حالا داینامیک هستند)
+async function getActiveTestPlanByLabel(db, label) {
+  return await db.prepare("SELECT * FROM test_plans WHERE label = ? AND is_active = 1 LIMIT 1").bind(label).first();
+}
+
 // ================= توابع تاریخ شمسی =================
 function getShamsiNow() {
   const now = new Date();
@@ -317,10 +340,18 @@ async function mainMenu(db, user_id) {
   // دکمه «دعوت دوستان» فقط زمانی نمایش داده می‌شود که کاربر حداقل یک سرویس با ورکر ثبت‌شده داشته باشد.
   const hasWorker = await db.prepare("SELECT 1 FROM services WHERE user_id = ? AND cf_domain IS NOT NULL AND cf_domain != '' LIMIT 1").bind(user_id).first();
 
-  const keyboard = [
-    [{ text: "🎁 دریافت اکانت رایگان (تست)" }, { text: "🛒 خرید سرویس" }],
-    [{ text: "📚 آموزش‌ها" }, { text: "📦 سرویس‌های من" }]
-  ];
+  // دکمه‌های هدیه/تست کاملاً داینامیک هستند: هر کمپین فعال (اکانت تست، جشنواره، ...) یک دکمه جدا می‌گیرد
+  const testPlans = await getActiveTestPlans(db);
+  const keyboard = [];
+  if (testPlans.length) {
+    keyboard.push([{ text: testPlans[0].label }, { text: "🛒 خرید سرویس" }]);
+    for (let i = 1; i < testPlans.length; i++) {
+      keyboard.push([{ text: testPlans[i].label }]);
+    }
+  } else {
+    keyboard.push([{ text: "🛒 خرید سرویس" }]);
+  }
+  keyboard.push([{ text: "📚 آموزش‌ها" }, { text: "📦 سرویس‌های من" }]);
 
   if (hasWorker) {
     keyboard.push([{ text: "🤝 دعوت دوستان (هدیه ۵ روزه)" }, { text: "👤 وضعیت من" }]);
@@ -348,6 +379,7 @@ function settingsMenu() {
   return {
     keyboard: [
       [{ text: "🧩 مدیریت پلن‌های اشتراک" }],
+      [{ text: "🎁 مدیریت اکانت تست / جشنواره" }],
       [{ text: "🎟 مدیریت کدهای تخفیف" }],
       [{ text: "🗑 پاک کردن کامل دیتابیس" }],
       [{ text: "🔙 بازگشت به پنل مدیریت" }]
@@ -391,6 +423,43 @@ function planEditFieldsKeyboard(planId) {
   };
 }
 
+// ================= پنل مدیریت کمپین‌های اکانت تست/جشنواره =================
+async function renderTestPlansListMessage(db) {
+  const plans = await getAllTestPlans(db);
+  if (!plans.length) {
+    return { msg: "📭 هیچ کمپین هدیه/تستی ثبت نشده است.\n\nبرای شروع، یک کمپین جدید بسازید:", kb: { inline_keyboard: [[{ text: "➕ افزودن کمپین جدید", callback_data: "admaddtestplan" }]] } };
+  }
+  let msg = "🎁 <b>مدیریت اکانت تست / جشنواره</b>\n\n💡 هر کمپین یک دکمه جدا در منوی کاربر است؛ می‌توانید هم «اکانت تست» عادی و هم یک کمپین «جشنواره» جداگانه با تنظیمات متفاوت داشته باشید.\n\n";
+  const rows = [];
+  plans.forEach(p => {
+    const statusIcon = p.is_active ? "✅" : "🚫";
+    const firstTimeTxt = p.first_time_days > 0 ? `${p.first_time_days} روز` : "بدون تفاوت (مثل روزهای عادی)";
+    msg += `${statusIcon} <b>#${p.id} - ${escapeHtml(p.label)}</b>\n⏱ مدت عادی: ${p.days} روز\n🆕 مدت ویژه اولین‌بار کلا وارد ربات‌شدن: ${firstTimeTxt}\n🔁 سقف تکرار: هر ${p.cooldown_days} روز یک‌بار\n👥 نوع مصرف: ${p.is_single ? "تک‌کاربره" : "چندکاربره"}\n➖➖➖➖\n`;
+    rows.push([
+      { text: `✏️ ویرایش #${p.id}`, callback_data: `admedittestplan_${p.id}` },
+      { text: p.is_active ? `🚫 غیرفعال #${p.id}` : `✅ فعال‌سازی #${p.id}`, callback_data: `admtoggletestplan_${p.id}` },
+      { text: `🗑 حذف #${p.id}`, callback_data: `admdeltestplan_${p.id}` }
+    ]);
+    rows.push([
+      { text: p.is_single ? `👥 تبدیل #${p.id} به چندکاربره` : `👤 تبدیل #${p.id} به تک‌کاربره`, callback_data: `admtoggletestplantype_${p.id}` }
+    ]);
+  });
+  rows.push([{ text: "➕ افزودن کمپین جدید", callback_data: "admaddtestplan" }]);
+  return { msg, kb: { inline_keyboard: rows } };
+}
+
+function testPlanEditFieldsKeyboard(planId) {
+  return {
+    inline_keyboard: [
+      [{ text: "✏️ نام دکمه", callback_data: `admedittestplanfield_${planId}_label` }],
+      [{ text: "⏱ مدت عادی (روز)", callback_data: `admedittestplanfield_${planId}_days` }],
+      [{ text: "🆕 مدت ویژه اولین‌بار ورود به ربات (روز، ۰=بدون تفاوت)", callback_data: `admedittestplanfield_${planId}_first_time_days` }],
+      [{ text: "🔁 سقف تکرار (هر چند روز)", callback_data: `admedittestplanfield_${planId}_cooldown_days` }],
+      [{ text: "🔙 بازگشت به لیست کمپین‌ها", callback_data: "admtestplanslist" }]
+    ]
+  };
+}
+
 function adminServiceKeyboard(isSingle, isBlocked) {
   return { 
     keyboard: [
@@ -427,7 +496,7 @@ function tutorialsMenu() {
 const FIXED_MENU_BUTTON_TEXTS = new Set([
   "🤝 دعوت دوستان (هدیه ۵ روزه)", "🎟 مدیریت کدهای تخفیف", "📊 گزارش فروش", "🎁 دریافت اکانت رایگان (تست)", "🛒 خرید سرویس", "📚 آموزش‌ها", "📦 سرویس‌های من", "👤 وضعیت من", "📞 ارتباط با پشتیبانی", "⚙️ ورود به پنل مدیریت حرفه‌ای",
   "👥 لیست کامل کاربران و خریدها", "🛠 مدیریت سرویس‌های کاربر", "📖 راهنمای پنل مدیریت", "🏠 بازگشت به منوی اصلی",
-  "📢 ارسال اطلاعیه", "⚙️ تنظیمات ربات", "🗑 پاک کردن کامل دیتابیس", "🔙 بازگشت به پنل مدیریت", "🧩 مدیریت پلن‌های اشتراک",
+  "📢 ارسال اطلاعیه", "⚙️ تنظیمات ربات", "🗑 پاک کردن کامل دیتابیس", "🔙 بازگشت به پنل مدیریت", "🧩 مدیریت پلن‌های اشتراک", "🎁 مدیریت اکانت تست / جشنواره",
   "⏳ صفر کردن زمان", "➕ تمدید / شارژ", "👥 تبدیل به چندکاربره", "👤 تبدیل به تک‌کاربره", "✅ وصل فوری", "🛑 قطع فوری", "✏️ ویرایش ورکر",
   "🔙 مرحله قبل", "🔙 بازگشت به پنل کاربری", "❌ لغو عملیات",
   "🚀 آموزش برنامه v2ray برای نصب کانفیگ", "📥 آموزش برنامه v2box برای نصب کانفیگ", "💬 راهنمای ارسال پیام به پشتیبانی"
@@ -585,7 +654,7 @@ export default {
             await sendMessage(state.target_user, "❌ فرآیند صدور سرویس توسط پشتیبانی لغو شد. می‌توانید مجدداً درخواست دهید.", await mainMenu(db, state.target_user));
           }
           await clearState(db, ADMIN_ID);
-          const retryKb = state.target_user ? { inline_keyboard: [[{ text: "🔄 تلاش مجدد برای همین کاربر (ثبت ورکر جدید)", callback_data: `admretrydomain_${state.target_user}_${state.days}_${state.hours}_${state.action}_${state.user_type}` }]] } : null;
+          const retryKb = state.target_user ? { inline_keyboard: [[{ text: "🔄 تلاش مجدد برای همین کاربر (ثبت ورکر جدید)", callback_data: `admretrydomain_${state.target_user}_${state.days}_${state.hours}_${state.action}_${state.user_type}_${state.test_plan_id || 0}` }]] } : null;
           await sendMessage(chat_id, `⚠️ چون از مرحله «ثبت آدرس ورکر» خارج شدید، آن عملیات به‌صورت خودکار لغو شد و کاربر مربوطه از حالت انتظار خارج و مطلع گردید.${cancelledUserInfo}\n\nبرای تکمیل درخواست او لازم است دوباره از «🛠 مدیریت سرویس‌های کاربر» او را جستجو و اقدام کنید، یا از دکمه زیر استفاده نمایید.`, adminPanelMenu());
           if (retryKb) await sendMessage(chat_id, "برای شروع مجدد سریع همین درخواست:", retryKb);
           return new Response('OK');
@@ -596,7 +665,7 @@ export default {
           if (text === "❌ لغو عملیات") {
              if (state.admin_message_id) {
                  await callTelegram('editMessageReplyMarkup', { chat_id: ADMIN_ID, message_id: state.admin_message_id, reply_markup: { inline_keyboard: [] } });
-                 if (state.is_test) {
+                 if (state.is_test || state.admin_notified_as_text) {
                      await callTelegram('editMessageText', { chat_id: ADMIN_ID, message_id: state.admin_message_id, text: "❌ <b>این درخواست توسط کاربر لغو شد.</b>", parse_mode: "HTML" });
                  } else {
                      await callTelegram('editMessageCaption', { chat_id: ADMIN_ID, message_id: state.admin_message_id, caption: "❌ <b>این درخواست توسط کاربر لغو شد.</b>", parse_mode: "HTML" });
@@ -976,7 +1045,8 @@ export default {
           `3️⃣ <b>پاسخ به پیام‌های شخصی:</b> هنگامی که کاربر پیامی بفرستد، دکمه «💬 پاسخ به این پیام» زیر آن قرار می‌گیرد تا مستقیماً به کاربر پاسخ دهید.\n\n` +
           `4️⃣ <b>ارسال اطلاعیه:</b> از دکمه «📢 ارسال اطلاعیه» استفاده کنید و انتخاب کنید که برای <b>همه کاربران</b> یا فقط <b>کاربران خاص</b> (با آیدی/یوزرنیم) ارسال شود. هر نوع پیام (متن، عکس، لینک و ...) که ارسال کنید، پس از تایید شما عیناً برای مقصد انتخاب‌شده فرستاده می‌شود.\n\n` +
           `5️⃣ <b>تنظیمات ربات:</b> از دکمه «⚙️ تنظیمات ربات» می‌توانید در صورت نیاز کل دیتابیس (کاربران و سرویس‌ها) را به‌طور کامل و غیرقابل‌بازگشت پاک کنید.\n\n` +
-          `6️⃣ <b>مدیریت پلن‌های اشتراک:</b> از مسیر «⚙️ تنظیمات ربات ← 🧩 مدیریت پلن‌های اشتراک» می‌توانید پلن جدید بسازید (نام دکمه، مدت اعتبار، قیمت تک‌کاربره و چندکاربره، تاریخ پایان پیشنهاد اختیاری)، پلن‌های موجود را ویرایش کنید، و به‌جای حذف کامل، آن‌ها را فقط غیرفعال/فعال کنید تا از لیست خرید کاربران خارج/وارد شوند.`;
+          `6️⃣ <b>مدیریت پلن‌های اشتراک:</b> از مسیر «⚙️ تنظیمات ربات ← 🧩 مدیریت پلن‌های اشتراک» می‌توانید پلن جدید بسازید (نام دکمه، مدت اعتبار، قیمت تک‌کاربره و چندکاربره، تاریخ پایان پیشنهاد اختیاری)، پلن‌های موجود را ویرایش کنید، و به‌جای حذف کامل، آن‌ها را فقط غیرفعال/فعال کنید تا از لیست خرید کاربران خارج/وارد شوند.\n💡 اگر قیمت تک‌کاربره یا چندکاربرهٔ یک پلن را صفر بگذارید، آن حالت «رایگان» می‌شود و بدون رسید مستقیم برای تایید شما ارسال می‌شود.\n\n` +
+          `7️⃣ <b>مدیریت اکانت تست / جشنواره:</b> از مسیر «⚙️ تنظیمات ربات ← 🎁 مدیریت اکانت تست / جشنواره» می‌توانید همزمان چند کمپین هدیه مستقل بسازید (مثلاً هم «اکانت تست» عادی هم یک «جشنواره» جدا)، هرکدام با نام دکمه، مدت عادی، مدت ویژه برای کاربرانی که اولین‌بار کلا وارد ربات شده‌اند، سقف تکرار (مثلاً هر ۳۰ روز) و تک/چندکاربره بودن مخصوص به خودش؛ و می‌توانید هرکدام را جدا فعال/غیرفعال یا حذف کنید.`;
           await sendMessage(chat_id, guideText, adminPanelMenu());
           return new Response('OK');
         }
@@ -1212,58 +1282,62 @@ export default {
           return new Response('OK');
         }
 
-        if (text === "🎁 دریافت اکانت رایگان (تست)" && user_id !== ADMIN_ID) {
-          if (state && state.locked) {
-            await sendMessage(user_id, "⏳ درخواست قبلی شما در حال پردازش است. لطفاً منتظر بمانید...");
-            return new Response('OK');
-          }
-
-          const userRow = await db.prepare("SELECT last_test_date FROM users WHERE user_id = ?").bind(user_id).first();
-          let isFirstTime = true;
-          if (userRow && userRow.last_test_date) {
-            const lastTestTime = new Date(userRow.last_test_date).getTime();
-            const nowTime = Date.now();
-            const diffDays = (nowTime - lastTestTime) / (1000 * 60 * 60 * 24);
-            
-            if (diffDays < 30) {
-              const remainingDays = Math.ceil(30 - diffDays);
-              await sendMessage(user_id, `❌ <b>دریافت مجدد امکان‌پذیر نیست!</b>\n\nشما در این ماه اکانت رایگان خود را دریافت کرده‌اید. شما <b>ماهی یک بار</b> مجاز به دریافت هدیه هستید.\n⏳ لطفاً <b>${remainingDays} روز</b> دیگر برای دریافت تست بعدی مراجعه کنید.`);
+        // ================= دریافت اکانت رایگان/تست (کاملاً داینامیک - ممکن است چند کمپین مستقل مثل «تست» و «جشنواره» همزمان فعال باشند) =================
+        if (user_id !== ADMIN_ID) {
+          const testPlan = text ? await getActiveTestPlanByLabel(db, text) : null;
+          if (testPlan) {
+            if (state && state.locked) {
+              await sendMessage(user_id, "⏳ درخواست قبلی شما در حال پردازش است. لطفاً منتظر بمانید...");
               return new Response('OK');
             }
-            isFirstTime = false;
+
+            // پرچم دائمی: آیا این کاربر تا حالا (در کل عمر حساب) از هیچ کمپین رایگانی استفاده کرده یا نه؛ هیچ‌وقت ریست نمی‌شود
+            const userRow = await db.prepare("SELECT first_gift_used FROM users WHERE user_id = ?").bind(user_id).first();
+            const isFirstEver = !userRow || !userRow.first_gift_used;
+
+            // سقف تکرار مخصوص همین کمپین (هر کمپین سقف تکرار جدای خودش را دارد)
+            const claimRow = await db.prepare("SELECT last_claim_shamsi FROM test_claims WHERE user_id = ? AND test_plan_id = ?").bind(user_id, testPlan.id).first();
+            if (claimRow && claimRow.last_claim_shamsi) {
+              const lastClaimTime = new Date(claimRow.last_claim_shamsi).getTime();
+              const diffDays = (Date.now() - lastClaimTime) / (1000 * 60 * 60 * 24);
+              if (diffDays < testPlan.cooldown_days) {
+                const remainingDays = Math.ceil(testPlan.cooldown_days - diffDays);
+                await sendMessage(user_id, `❌ <b>دریافت مجدد امکان‌پذیر نیست!</b>\n\nشما اخیراً از «${escapeHtml(testPlan.label)}» استفاده کرده‌اید. سقف تکرار این هدیه هر <b>${testPlan.cooldown_days} روز</b> یک‌بار است.\n⏳ لطفاً <b>${remainingDays} روز</b> دیگر مراجعه کنید.`);
+                return new Response('OK');
+              }
+            }
+
+            const applyDays = (isFirstEver && testPlan.first_time_days > 0) ? testPlan.first_time_days : testPlan.days;
+            const applySingle = !!testPlan.is_single;
+            const typeLabel = applySingle ? "تک‌کاربره" : "چندکاربره";
+
+            let msgText = (isFirstEver && testPlan.first_time_days > 0)
+              ? `🎁 <b>مژده:</b> چون اولین باری است که کلا وارد ربات شده‌اید، یک اکانت <b>${applyDays} روزه (${typeLabel})</b> به شما تعلق می‌گیرد!\n(از دفعات بعد، هدیه شما ${testPlan.days} روزه خواهد بود)`
+              : `🎁 اکانت هدیه شما (<b>${applyDays} روزه و ${typeLabel}</b>) در حال آماده‌سازی است...\n\n⚠️ <b>هشدار:</b> لطفاً قوانین مصرف منصفانه را رعایت کنید، در غیر این صورت امکان دریافت مجدد در آینده مسدود خواهد شد.`;
+
+            await sendMessage(user_id, msgText);
+
+            let newState = { days: applyDays, hours: 0, type: `اکانت تست (${applyDays} روزه - ${typeLabel})`, is_test: true, test_plan_id: testPlan.id, user_type: applySingle ? '1' : '0', step: 'PENDING_ADMIN' };
+
+            const userLink = getUserLink(user_id, first_name, username);
+            const lastSrv = await db.prepare("SELECT cf_domain FROM services WHERE user_id = ? ORDER BY id DESC LIMIT 1").bind(user_id).first();
+            const workerText = lastSrv ? `\n🌐 <b>ورکر فعلی:</b> <code>${lastSrv.cf_domain}</code>` : `\n🌐 <b>ورکر فعلی:</b> ندارد (نیاز به ثبت ورکر جدید)`;
+
+            const admText = `🎁 <b>درخواست هدیه (${escapeHtml(testPlan.label)} - ${newState.type})</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>${workerText}`;
+            const admKb = { inline_keyboard: [
+                [{ text: "✅ تایید و ارسال لینک", callback_data: `admaprv_test_${user_id}_${applyDays}_0_${applySingle ? '1' : '0'}_${testPlan.id}` }],
+                [{ text: "❌ رد کردن", callback_data: `admrej_${user_id}` }]
+            ]};
+
+            const adminMsgRes = await callTelegram('sendMessage', { chat_id: ADMIN_ID, text: admText, reply_markup: admKb, parse_mode: "HTML" });
+            if (adminMsgRes && adminMsgRes.ok) {
+                newState.admin_message_id = adminMsgRes.result.message_id;
+            }
+            await setState(db, user_id, newState);
+
+            await sendMessage(user_id, "✅ درخواست شما ثبت شد و به ادمین ارسال گردید. لطفاً تا پاسخ پشتیبانی شکیبا باشید.", pendingMenu());
+            return new Response('OK');
           }
-
-          const testDays = isFirstTime ? 2 : 1;
-          let msgText = "";
-          
-          if (isFirstTime) {
-              msgText = `🎁 <b>مژده:</b> چون بار اول شماست، یک اکانت تست <b>۲ روزه (کاملاً تک‌کاربره)</b> به شما تعلق می‌گیرد!\n(برای ماه‌های آینده، هدیه شما ۱ روزه خواهد بود)`;
-          } else {
-              msgText = `🎁 اکانت هدیه ماهانه شما (<b>۱ روزه و تک‌کاربره</b>) در حال آماده‌سازی است...\n\n⚠️ <b>هشدار:</b> این اکانت تست مجدد است. لطفاً قوانین مصرف منصفانه را رعایت کنید، در غیر این صورت امکان دریافت تست در ماه‌های آینده مسدود خواهد شد.`;
-          }
-          
-          await sendMessage(user_id, msgText);
-          
-          let newState = { days: testDays, hours: 0, type: `اکانت تست (${testDays} روزه - تک‌کاربره)`, is_test: true, user_type: '1', step: 'PENDING_ADMIN' };
-          
-          const userLink = getUserLink(user_id, first_name, username);
-          const lastSrv = await db.prepare("SELECT cf_domain FROM services WHERE user_id = ? ORDER BY id DESC LIMIT 1").bind(user_id).first();
-          const workerText = lastSrv ? `\n🌐 <b>ورکر فعلی:</b> <code>${lastSrv.cf_domain}</code>` : `\n🌐 <b>ورکر فعلی:</b> ندارد (نیاز به ثبت ورکر جدید)`;
-
-          const admText = `🎁 <b>درخواست تست (${newState.type})</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>${workerText}`;
-          const admKb = { inline_keyboard: [
-              [{ text: "✅ تایید و ارسال لینک تست", callback_data: `admaprv_test_${user_id}_${testDays}_0_1` }],
-              [{ text: "❌ رد کردن", callback_data: `admrej_${user_id}` }]
-          ]};
-
-          const adminMsgRes = await callTelegram('sendMessage', { chat_id: ADMIN_ID, text: admText, reply_markup: admKb, parse_mode: "HTML" });
-          if (adminMsgRes && adminMsgRes.ok) {
-              newState.admin_message_id = adminMsgRes.result.message_id;
-          }
-          await setState(db, user_id, newState);
-
-          await sendMessage(user_id, "✅ درخواست تست شما ثبت شد و به ادمین ارسال گردید. لطفاً تا پاسخ پشتیبانی شکیبا باشید.", pendingMenu());
-          return new Response('OK');
         }
 
         if (msg.photo && state && state.step === 'WAIT_RECEIPT') {
@@ -1331,7 +1405,7 @@ export default {
           if (state.action === 'test') {
             applyHours = parseInt(applyDays) * 24;
             applyDays = 0;
-            applySingle = true; 
+            // applySingle از تنظیمات همان کمپین تست/جشنواره خوانده می‌شود (دیگر همیشه تک‌کاربره نیست)
           }
 
           const cfRes = await updateCloudflareExp(domainInput, applyDays, applyHours, applySingle, state.target_user, db);
@@ -1342,8 +1416,9 @@ export default {
             const planName = state.action === 'test' ? `تست ${state.days} روزه (${applySingle ? 'یک کاربره' : 'چند کاربره'})` : `سرویس ${planDaysLabel(state.days)} (${applySingle ? 'یک کاربره' : 'چند کاربره'})`;
             const planTypeDb = state.action === 'test' ? `اکانت تست (رایگان) - ${applySingle ? 'یک کاربره' : 'چند کاربره'}` : (applySingle ? 'یک کاربره' : 'چند کاربره');
             
-            if (state.action === 'test') {
-              await db.prepare("INSERT INTO users (user_id, last_test_date) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_test_date = excluded.last_test_date").bind(state.target_user, getShamsiDateOnly()).run();
+            if (state.action === 'test' && state.test_plan_id) {
+              await db.prepare("INSERT INTO test_claims (user_id, test_plan_id, last_claim_shamsi, claim_count) VALUES (?, ?, ?, 1) ON CONFLICT(user_id, test_plan_id) DO UPDATE SET last_claim_shamsi = excluded.last_claim_shamsi, claim_count = claim_count + 1").bind(state.target_user, state.test_plan_id, getShamsiDateOnly()).run();
+              await db.prepare("INSERT INTO users (user_id, first_gift_used) VALUES (?, 1) ON CONFLICT(user_id) DO UPDATE SET first_gift_used = 1").bind(state.target_user).run();
             }
             
             await db.prepare("INSERT INTO services (user_id, plan_days, plan_type, cf_domain, sub_link, exp_date, status, purchase_date_shamsi) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
@@ -1557,8 +1632,87 @@ export default {
           return new Response('OK');
         }
 		
-		
-		// ================= مدیریت کدهای تخفیف =================
+		// ================= مدیریت کمپین‌های اکانت تست/جشنواره =================
+        if (text === "🎁 مدیریت اکانت تست / جشنواره" && user_id === ADMIN_ID) {
+          await clearState(db, ADMIN_ID);
+          const { msg, kb } = await renderTestPlansListMessage(db);
+          await sendMessage(ADMIN_ID, msg, kb);
+          return new Response('OK');
+        }
+
+        // مراحل ساخت کمپین جدید (نام دکمه → مدت عادی → مدت ویژه اولین‌بار → سقف تکرار → تک/چندکاربره)
+        if (user_id === ADMIN_ID && state && state.step === 'WAIT_TESTPLAN_LABEL') {
+          const label = text.trim();
+          if (!label) {
+            await sendMessage(ADMIN_ID, "❌ نام دکمه نمی‌تواند خالی باشد. لطفاً دوباره ارسال کنید:", pendingMenu());
+            return new Response('OK');
+          }
+          await setState(db, ADMIN_ID, { step: 'WAIT_TESTPLAN_DAYS', new_test_plan: { label } });
+          await sendMessage(ADMIN_ID, "⏳ <b>مدت اعتبار عادی</b> این هدیه را بر حسب روز وارد کنید (مثلاً: 1):", pendingMenu());
+          return new Response('OK');
+        }
+
+        if (user_id === ADMIN_ID && state && state.step === 'WAIT_TESTPLAN_DAYS') {
+          const days = parseInt(text.trim());
+          if (isNaN(days) || days <= 0) {
+            await sendMessage(ADMIN_ID, "❌ لطفاً یک عدد معتبر برای تعداد روز وارد کنید:", pendingMenu());
+            return new Response('OK');
+          }
+          const newTestPlan = { ...state.new_test_plan, days };
+          await setState(db, ADMIN_ID, { step: 'WAIT_TESTPLAN_FIRSTDAYS', new_test_plan: newTestPlan });
+          await sendMessage(ADMIN_ID, "🆕 <b>مدت اعتبار ویژه</b> برای کسانی که اولین‌بار کلا وارد ربات شده‌اند را وارد کنید (اگر تفاوتی با مدت عادی نمی‌خواهید، عدد 0 ارسال کنید):", pendingMenu());
+          return new Response('OK');
+        }
+
+        if (user_id === ADMIN_ID && state && state.step === 'WAIT_TESTPLAN_FIRSTDAYS') {
+          const firstTimeDays = parseInt(text.trim());
+          if (isNaN(firstTimeDays) || firstTimeDays < 0) {
+            await sendMessage(ADMIN_ID, "❌ لطفاً یک عدد معتبر وارد کنید:", pendingMenu());
+            return new Response('OK');
+          }
+          const newTestPlan = { ...state.new_test_plan, first_time_days: firstTimeDays };
+          await setState(db, ADMIN_ID, { step: 'WAIT_TESTPLAN_COOLDOWN', new_test_plan: newTestPlan });
+          await sendMessage(ADMIN_ID, "🔁 <b>سقف تکرار</b> را وارد کنید؛ یعنی هر چند روز یک‌بار همین کمپین قابل دریافت مجدد باشد (مثلاً برای ماهی یک‌بار عدد 30):", pendingMenu());
+          return new Response('OK');
+        }
+
+        if (user_id === ADMIN_ID && state && state.step === 'WAIT_TESTPLAN_COOLDOWN') {
+          const cooldownDays = parseInt(text.trim());
+          if (isNaN(cooldownDays) || cooldownDays <= 0) {
+            await sendMessage(ADMIN_ID, "❌ لطفاً یک عدد معتبر (بزرگ‌تر از صفر) وارد کنید:", pendingMenu());
+            return new Response('OK');
+          }
+          const newTestPlan = { ...state.new_test_plan, cooldown_days: cooldownDays };
+          await setState(db, ADMIN_ID, { step: 'WAIT_TESTPLAN_TYPE', new_test_plan: newTestPlan });
+          const typeKb = { inline_keyboard: [
+            [{ text: "👤 تک‌کاربره", callback_data: "newtestplantype_1" }, { text: "👥 چندکاربره", callback_data: "newtestplantype_0" }]
+          ] };
+          await sendMessage(ADMIN_ID, "👥 نوع مصرف این کمپین را انتخاب کنید:", typeKb);
+          return new Response('OK');
+        }
+
+        // ویرایش مقدار یک فیلد از کمپین تست/جشنواره
+        if (user_id === ADMIN_ID && state && state.step === 'WAIT_TESTPLAN_EDIT_VALUE') {
+          const { test_plan_id, field } = state;
+          let value = text.trim();
+          const numericFields = ['days', 'first_time_days', 'cooldown_days'];
+          if (numericFields.includes(field)) {
+            const n = parseInt(value);
+            if (isNaN(n) || n < 0 || (field !== 'first_time_days' && n <= 0)) {
+              await sendMessage(ADMIN_ID, "❌ لطفاً یک عدد معتبر وارد کنید:", pendingMenu());
+              return new Response('OK');
+            }
+            value = n;
+          }
+          await db.prepare(`UPDATE test_plans SET ${field} = ? WHERE id = ?`).bind(value, test_plan_id).run();
+          await clearState(db, ADMIN_ID);
+          await sendMessage(ADMIN_ID, "✅ کمپین با موفقیت به‌روزرسانی شد.");
+          const { msg, kb } = await renderTestPlansListMessage(db);
+          await sendMessage(ADMIN_ID, msg, kb);
+          return new Response('OK');
+        }
+
+        // ================= مدیریت کدهای تخفیف =================
         if (text === "🎟 مدیریت کدهای تخفیف" && user_id === ADMIN_ID) {
           const { results: discounts } = await db.prepare("SELECT * FROM discounts ORDER BY id DESC").all();
           let msg = "🎟 <b>لیست کدهای تخفیف فعال:</b>\n\n";
@@ -2265,6 +2419,119 @@ export default {
           await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: msg, reply_markup: kb, parse_mode: "HTML" });
         }
 
+        // ================= مدیریت کمپین‌های اکانت تست/جشنواره (CRUD) =================
+        else if (data === 'admtestplanslist') {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          await clearState(db, ADMIN_ID);
+          const { msg, kb } = await renderTestPlansListMessage(db);
+          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: msg, reply_markup: kb, parse_mode: "HTML" });
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+        }
+
+        else if (data === 'admaddtestplan') {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          await setState(db, ADMIN_ID, { step: 'WAIT_TESTPLAN_LABEL' });
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+          await sendMessage(ADMIN_ID, "📝 <b>ساخت کمپین جدید (تست/جشنواره/...)</b>\n\nابتدا <b>نام دکمه</b> این کمپین را که کاربر می‌بیند وارد کنید (مثلاً: 🎉 جشنواره ویژه):", pendingMenu());
+        }
+
+        else if (data.startsWith('newtestplantype_')) {
+          if (user_id !== ADMIN_ID || !state || state.step !== 'WAIT_TESTPLAN_TYPE') return new Response('OK');
+          const isSingle = data.split('_')[1] === '1' ? 1 : 0;
+          const ntp = state.new_test_plan;
+          const { results: maxRow } = await db.prepare("SELECT COALESCE(MAX(sort_order), 0) as m FROM test_plans").all();
+          const nextOrder = (maxRow && maxRow[0] ? maxRow[0].m : 0) + 1;
+          await db.prepare("INSERT INTO test_plans (label, days, first_time_days, cooldown_days, is_single, is_active, sort_order) VALUES (?, ?, ?, ?, ?, 1, ?)")
+            .bind(ntp.label, ntp.days, ntp.first_time_days || 0, ntp.cooldown_days, isSingle, nextOrder).run();
+          await clearState(db, ADMIN_ID);
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `✅ کمپین <b>${escapeHtml(ntp.label)}</b> با موفقیت ساخته شد و اکنون فعال است.`, parse_mode: "HTML" });
+          const { msg, kb } = await renderTestPlansListMessage(db);
+          await sendMessage(ADMIN_ID, msg, kb);
+        }
+
+        else if (data.startsWith('admedittestplanfield_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const parts = data.split('_');
+          const testPlanId = parts[1];
+          const field = parts.slice(2).join('_');
+          const testPlan = await getTestPlanById(db, testPlanId);
+          if (!testPlan) {
+            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ کمپین یافت نشد.", show_alert: true });
+            return new Response('OK');
+          }
+          await setState(db, ADMIN_ID, { step: 'WAIT_TESTPLAN_EDIT_VALUE', test_plan_id: testPlanId, field });
+          const fieldLabels = { label: "نام دکمه", days: "مدت اعتبار عادی (روز)", first_time_days: "مدت ویژه اولین‌بار ورود به ربات (روز، ۰=بدون تفاوت)", cooldown_days: "سقف تکرار (هر چند روز)" };
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+          await sendMessage(ADMIN_ID, `✏️ مقدار جدید برای <b>${fieldLabels[field] || field}</b> کمپین #${testPlan.id} را وارد کنید:\n\nمقدار فعلی: <code>${escapeHtml(String(testPlan[field] ?? '-'))}</code>`, pendingMenu());
+        }
+
+        else if (data.startsWith('admedittestplan_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const testPlanId = data.split('_')[1];
+          const testPlan = await getTestPlanById(db, testPlanId);
+          if (!testPlan) {
+            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ کمپین یافت نشد.", show_alert: true });
+            return new Response('OK');
+          }
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `✏️ <b>ویرایش کمپین #${testPlan.id} - ${escapeHtml(testPlan.label)}</b>\n\nکدام مقدار را می‌خواهید ویرایش کنید؟ (برای تغییر تک/چندکاربره از دکمه مربوطه در لیست کمپین‌ها استفاده کنید)`, reply_markup: testPlanEditFieldsKeyboard(testPlan.id), parse_mode: "HTML" });
+        }
+
+        else if (data.startsWith('admtoggletestplantype_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const testPlanId = data.split('_')[1];
+          const testPlan = await getTestPlanById(db, testPlanId);
+          if (!testPlan) {
+            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ کمپین یافت نشد.", show_alert: true });
+            return new Response('OK');
+          }
+          await db.prepare("UPDATE test_plans SET is_single = ? WHERE id = ?").bind(testPlan.is_single ? 0 : 1, testPlan.id).run();
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: testPlan.is_single ? "✅ به چندکاربره تغییر کرد." : "✅ به تک‌کاربره تغییر کرد." });
+          const { msg, kb } = await renderTestPlansListMessage(db);
+          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: msg, reply_markup: kb, parse_mode: "HTML" });
+        }
+
+        else if (data.startsWith('admtoggletestplan_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const testPlanId = data.split('_')[1];
+          const testPlan = await getTestPlanById(db, testPlanId);
+          if (!testPlan) {
+            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ کمپین یافت نشد.", show_alert: true });
+            return new Response('OK');
+          }
+          await db.prepare("UPDATE test_plans SET is_active = ? WHERE id = ?").bind(testPlan.is_active ? 0 : 1, testPlan.id).run();
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: testPlan.is_active ? "🚫 کمپین غیرفعال شد." : "✅ کمپین فعال شد." });
+          const { msg, kb } = await renderTestPlansListMessage(db);
+          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: msg, reply_markup: kb, parse_mode: "HTML" });
+        }
+
+        else if (data.startsWith('admdeltestplanconfirm_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const testPlanId = data.split('_')[1];
+          await db.prepare("DELETE FROM test_plans WHERE id = ?").bind(testPlanId).run();
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "🗑 کمپین حذف شد." });
+          const { msg, kb } = await renderTestPlansListMessage(db);
+          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: msg, reply_markup: kb, parse_mode: "HTML" });
+        }
+
+        else if (data.startsWith('admdeltestplan_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const testPlanId = data.split('_')[1];
+          const testPlan = await getTestPlanById(db, testPlanId);
+          if (!testPlan) {
+            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ کمپین یافت نشد.", show_alert: true });
+            return new Response('OK');
+          }
+          const confirmKb = { inline_keyboard: [
+            [{ text: "✅ بله، حذف شود", callback_data: `admdeltestplanconfirm_${testPlan.id}` }],
+            [{ text: "🚫 نه، فقط غیرفعال کن", callback_data: `admtoggletestplan_${testPlan.id}` }],
+            [{ text: "❌ انصراف", callback_data: "admtestplanslist" }]
+          ] };
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `⚠️ آیا از <b>حذف کامل</b> کمپین #${testPlan.id} - ${escapeHtml(testPlan.label)} مطمئن هستید؟\n\n💡 اگر فقط می‌خواهید موقتاً از دسترس خارج شود (و بعداً دوباره فعالش کنید)، بهتر است به‌جای حذف، آن را «غیرفعال» کنید.`, reply_markup: confirmKb, parse_mode: "HTML" });
+        }
+
         else if (data.startsWith('admdelplan_')) {
           if (user_id !== ADMIN_ID) return new Response('OK');
           const planId = data.split('_')[1];
@@ -2296,9 +2563,11 @@ export default {
           state.is_test = false;
           await setState(db, user_id, state);
 
-          const typeButtons = [];
-          if (plan.price_single > 0) typeButtons.push({ text: `👤 یک کاربره (${plan.price_single.toLocaleString('fa-IR')} ت)`, callback_data: "users_1" });
-          if (plan.price_multi > 0) typeButtons.push({ text: `👥 چند کاربره (${plan.price_multi.toLocaleString('fa-IR')} ت)`, callback_data: "users_multi" });
+          // 💡 نکته: اگر قیمت یک حالت (تک/چندکاربره) صفر وارد شده باشد، آن حالت غیرفعال نمی‌شود بلکه «رایگان» است و بدون نیاز به رسید مستقیم برای ادمین ارسال می‌شود.
+          const typeButtons = [
+            { text: `👤 یک کاربره (${plan.price_single > 0 ? plan.price_single.toLocaleString('fa-IR') + ' ت' : 'رایگان'})`, callback_data: "users_1" },
+            { text: `👥 چند کاربره (${plan.price_multi > 0 ? plan.price_multi.toLocaleString('fa-IR') + ' ت' : 'رایگان'})`, callback_data: "users_multi" }
+          ];
           const kb = { inline_keyboard: [typeButtons] };
           await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `📦 پلن انتخابی: <b>${escapeHtml(plan.label)}</b>\n\n👥 نوع مصرف را مشخص کنید:`, reply_markup: kb, parse_mode: "HTML" });
         }
@@ -2307,6 +2576,37 @@ export default {
           const userType = data.split('_')[1];
           state.user_type = userType;
           state.type = (userType === '1') ? "تک کاربره (نامحدود)" : "چند کاربره (نامحدود)";
+
+          const planForType = await getPlanById(db, state.plan_id);
+          const planPriceForType = planForType ? (userType === '1' ? (planForType.price_single || 0) : (planForType.price_multi || 0)) : 0;
+
+          // ================= مسیر رایگان: اگر قیمت این حالت صفر باشد، بدون کد تخفیف/رسید مستقیم برای تایید ادمین می‌رود =================
+          if (planForType && planPriceForType === 0) {
+            state.step = 'PENDING_ADMIN';
+            state.price_paid = 0;
+            state.admin_notified_as_text = true;
+            await setState(db, user_id, state);
+
+            const uRow = await db.prepare("SELECT first_name, username FROM users WHERE user_id = ?").bind(user_id).first();
+            const userLink = getUserLink(user_id, uRow ? uRow.first_name : "کاربر", uRow ? uRow.username : "");
+            const lastSrv = await db.prepare("SELECT cf_domain FROM services WHERE user_id = ? ORDER BY id DESC LIMIT 1").bind(user_id).first();
+            const workerText = lastSrv ? `🌐 <b>ورکر فعلی کاربر:</b> <code>${lastSrv.cf_domain}</code>\n` : `🌐 <b>ورکر فعلی کاربر:</b> ندارد (نیاز به ثبت ورکر جدید)\n`;
+            const isSingle = state.type.includes('یک کاربره') ? '1' : '0';
+
+            const freeText = `🆓 <b>کاربر ${userLink} از این پنل رایگان استفاده کرد!</b>\n🆔 آیدی: <code>${user_id}</code>\n📦 پلن: ${escapeHtml(planForType.label)} - ${state.type}\n💵 مبلغ: رایگان (۰ تومان)\n${workerText}`;
+            const admMarkup = { inline_keyboard: [
+                [{ text: "✅ تایید و شارژ اکانت (رایگان)", callback_data: `admaprv_buy_${user_id}_${state.days}_0_${isSingle}` }],
+                [{ text: "❌ رد کردن درخواست", callback_data: `admrej_${user_id}` }]
+            ] };
+            const adminMsgRes = await callTelegram('sendMessage', { chat_id: ADMIN_ID, text: freeText, reply_markup: admMarkup, parse_mode: "HTML" });
+            if (adminMsgRes && adminMsgRes.ok) state.admin_message_id = adminMsgRes.result.message_id;
+            await setState(db, user_id, state);
+
+            await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `🆓 این پلن رایگان است؛ درخواست شما مستقیماً برای ادمین ارسال شد و نیازی به پرداخت/رسید نیست.`, parse_mode: "HTML" });
+            await sendMessage(user_id, "✅ درخواست شما ثبت شد و در صف بررسی قرار گرفت. لطفاً تا پاسخ پشتیبانی شکیبا باشید.", pendingMenu());
+            return new Response('OK');
+          }
+
           state.step = 'WAIT_DISCOUNT_CODE'; // رفتن به مرحله کد تخفیف
           await setState(db, user_id, state);
           
@@ -2369,7 +2669,8 @@ export default {
           const hours = parts[3];
           const action = parts[4];
           const userType = parts[5];
-          await setState(db, ADMIN_ID, { step: 'WAIT_DOMAIN', target_user: targetUser, days, hours, action, user_type: userType });
+          const testPlanIdRetry = parts[6] && parts[6] !== '0' ? parts[6] : null;
+          await setState(db, ADMIN_ID, { step: 'WAIT_DOMAIN', target_user: targetUser, days, hours, action, user_type: userType, test_plan_id: testPlanIdRetry });
           await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
           await sendMessage(ADMIN_ID, `🔗 لطفاً <b>آدرس دامنه ورکر (لینک اصلی)</b> را برای اختصاص دادن به کاربر <code>${targetUser}</code> تایپ و ارسال کنید:`, pendingMenu());
         }
@@ -2406,6 +2707,7 @@ export default {
           const days = parts[3];
           const hours = parts[4];
           const userType = parts[5] || '1';
+          const testPlanId = parts[6] || null; // فقط برای action=test، شناسه کمپین هدیه/تست
 
           const lastService = await db.prepare("SELECT cf_domain FROM services WHERE user_id = ? ORDER BY id DESC LIMIT 1").bind(targetUser).first();
           let preSelectedDomain = lastService ? lastService.cf_domain : null;
@@ -2426,7 +2728,7 @@ export default {
               if (action === 'test') {
                 applyHours = parseInt(applyDays) * 24;
                 applyDays = 0;
-                applySingle = true; 
+                // applySingle از تنظیمات همان کمپین تست/جشنواره خوانده می‌شود (دیگر همیشه تک‌کاربره نیست)
               }
 
               let normalizedDomain = preSelectedDomain.trim();
@@ -2440,8 +2742,9 @@ export default {
                   const planName = action === 'test' ? `تست ${days} روزه (${applySingle ? 'یک کاربره' : 'چند کاربره'})` : `سرویس ${planDaysLabel(days)} (${applySingle ? 'یک کاربره' : 'چند کاربره'})`;
                   const planTypeDb = action === 'test' ? `اکانت تست (رایگان) - ${applySingle ? 'یک کاربره' : 'چند کاربره'}` : (applySingle ? 'یک کاربره' : 'چند کاربره');
 
-                  if (action === 'test') {
-                    await db.prepare("INSERT INTO users (user_id, last_test_date) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_test_date = excluded.last_test_date").bind(targetUser, getShamsiDateOnly()).run();
+                  if (action === 'test' && testPlanId) {
+                    await db.prepare("INSERT INTO test_claims (user_id, test_plan_id, last_claim_shamsi, claim_count) VALUES (?, ?, ?, 1) ON CONFLICT(user_id, test_plan_id) DO UPDATE SET last_claim_shamsi = excluded.last_claim_shamsi, claim_count = claim_count + 1").bind(targetUser, testPlanId, getShamsiDateOnly()).run();
+                    await db.prepare("INSERT INTO users (user_id, first_gift_used) VALUES (?, 1) ON CONFLICT(user_id) DO UPDATE SET first_gift_used = 1").bind(targetUser).run();
                   } 
                   
                   await db.prepare("INSERT INTO services (user_id, plan_days, plan_type, cf_domain, sub_link, exp_date, status, purchase_date_shamsi) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
@@ -2473,7 +2776,7 @@ export default {
               await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: "✅ درخواست تایید شد. کاربر ورکری ندارد، لطفاً ورکر جدید را وارد کنید.", parse_mode: "HTML" });
           }
 
-          await setState(db, ADMIN_ID, { step: 'WAIT_DOMAIN', target_user: targetUser, days, hours, action, user_type: userType });
+          await setState(db, ADMIN_ID, { step: 'WAIT_DOMAIN', target_user: targetUser, days, hours, action, user_type: userType, test_plan_id: testPlanId });
           
           let admMsg = `🔗 کاربر جدید است. لطفاً <b>آدرس دامنه ورکر (لینک اصلی)</b> را برای اختصاص دادن به این کاربر تایپ و ارسال کنید.\n\n⌨️ تا ارسال آدرس ورکر یا لغو عملیات، فقط از دکمهٔ «❌ لغو عملیات» پایین صفحه استفاده کنید.`;
           await sendMessage(ADMIN_ID, admMsg, pendingMenu());
