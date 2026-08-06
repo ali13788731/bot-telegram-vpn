@@ -349,8 +349,8 @@ function pendingMenu() {
 function tutorialsMenu() {
   return {
     keyboard: [
-      [{ text: "🔄 آموزش آپدیت کردن لینک (بروزرسانی)" }],
-      [{ text: "🚀 آموزش راه‌اندازی در V2Box" }],
+      [{ text: "🚀 آموزش برنامه v2ray برای نصب کانفیگ" }],
+      [{ text: "📥 آموزش برنامه v2box برای نصب کانفیگ" }],
       [{ text: "💬 راهنمای ارسال پیام به پشتیبانی" }],
       [{ text: "🏠 بازگشت به منوی اصلی" }]
     ], resize_keyboard: true
@@ -365,7 +365,7 @@ const FIXED_MENU_BUTTON_TEXTS = new Set([
   "📢 ارسال اطلاعیه", "⚙️ تنظیمات ربات", "🗑 پاک کردن کامل دیتابیس", "🔙 بازگشت به پنل مدیریت",
   "⏳ صفر کردن زمان", "➕ تمدید / شارژ", "👥 تبدیل به چندکاربره", "👤 تبدیل به تک‌کاربره", "✅ وصل فوری", "🛑 قطع فوری", "✏️ ویرایش ورکر",
   "🔙 مرحله قبل", "🔙 بازگشت به پنل کاربری", "❌ لغو عملیات",
-  "🔄 آموزش آپدیت کردن لینک (بروزرسانی)", "🚀 آموزش راه‌اندازی در V2Box", "💬 راهنمای ارسال پیام به پشتیبانی"
+  "🚀 آموزش برنامه v2ray برای نصب کانفیگ", "📥 آموزش برنامه v2box برای نصب کانفیگ", "💬 راهنمای ارسال پیام به پشتیبانی"
 ]);
 
 function daysKeyboard() {
@@ -1046,14 +1046,16 @@ export default {
           await sendMessage(chat_id, "کدام آموزش را نیاز دارید؟ 👇", tutorialsMenu());
           return new Response('OK');
         }
-        if (text === "🔄 آموزش آپدیت کردن لینک (بروزرسانی)") {
-          const res = await callTelegram('sendPhoto', { chat_id, photo: PIC_UPDATE_SUB, caption: "🖼 برای دریافت بهترین سرعت و پینگ، همیشه لینک خود را طبق این عکس آپدیت کنید." });
-          if (!res.ok) await sendMessage(chat_id, "لینک عکس آموزشی تنظیم نشده است.");
+        if (text === "🚀 آموزش برنامه v2ray برای نصب کانفیگ") {
+          const v2rayFileId = "BAACAgQAAxkBAAEtRShqdE0hkPyjv56Zj5LVELpnsOIw3wACBx8AAlZvoVOrEkJnzs9sFT0E";
+          const res = await callTelegram('sendVideo', { chat_id, video: v2rayFileId, caption: "🎥 آموزش نصب و راه‌اندازی کانفیگ در برنامه V2ray" });
+          if (!res.ok) await sendMessage(chat_id, "ویدیوی آموزشی یافت نشد یا مشکلی در ارسال وجود دارد.");
           return new Response('OK');
         }
-        if (text === "🚀 آموزش راه‌اندازی در V2Box") {
-          const res = await callTelegram('sendPhoto', { chat_id, photo: PIC_V2BOX_SETUP, caption: "🖼 مراحل وارد کردن لینک در برنامه V2Box طبق این عکس می‌باشد." });
-          if (!res.ok) await sendMessage(chat_id, "لینک عکس آموزشی تنظیم نشده است.");
+        if (text === "📥 آموزش برنامه v2box برای نصب کانفیگ") {
+          const v2boxFileId = "BAACAgQAAxkBAAEtRSZqdE0EhRYV4w4BZ6w7AAFUDw7Q2ikAAgYfAAJWb6FTbVW_8ce4y249BA";
+          const res = await callTelegram('sendVideo', { chat_id, video: v2boxFileId, caption: "🎥 آموزش نصب و راه‌اندازی کانفیگ در برنامه V2box" });
+          if (!res.ok) await sendMessage(chat_id, "ویدیوی آموزشی یافت نشد یا مشکلی در ارسال وجود دارد.");
           return new Response('OK');
         }
         if (text === "💬 راهنمای ارسال پیام به پشتیبانی") {
