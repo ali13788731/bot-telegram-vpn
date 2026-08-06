@@ -1046,14 +1046,22 @@ export default {
         }
         if (text === "🚀 آموزش برنامه v2ray برای نصب کانفیگ") {
           const v2rayFileId = "BAACAgQAAxkBAAEtRShqdE0hkPyjv56Zj5LVELpnsOIw3wACBx8AAlZvoVOrEkJnzs9sFT0E";
-          const res = await callTelegram('sendVideo', { chat_id, video: v2rayFileId, caption: "🎥 آموزش نصب و راه‌اندازی کانفیگ در برنامه V2ray" });
-          if (!res.ok) await sendMessage(chat_id, "ویدیوی آموزشی یافت نشد یا مشکلی در ارسال وجود دارد.");
+          const res = await fetch(`https://api.telegram.org/bot${TOKEN}/sendVideo`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chat_id, video: v2rayFileId, caption: "🎥 آموزش نصب و راه‌اندازی کانفیگ در برنامه V2ray" })
+          });
+          if (!res.ok) await sendMessage(chat_id, "❌ ویدیوی آموزشی یافت نشد یا مشکلی در ارسال وجود دارد. لطفاً به پشتیبانی اطلاع دهید.");
           return new Response('OK');
         }
         if (text === "📥 آموزش برنامه v2box برای نصب کانفیگ") {
           const v2boxFileId = "BAACAgQAAxkBAAEtRSZqdE0EhRYV4w4BZ6w7AAFUDw7Q2ikAAgYfAAJWb6FTbVW_8ce4y249BA";
-          const res = await callTelegram('sendVideo', { chat_id, video: v2boxFileId, caption: "🎥 آموزش نصب و راه‌اندازی کانفیگ در برنامه V2box" });
-          if (!res.ok) await sendMessage(chat_id, "ویدیوی آموزشی یافت نشد یا مشکلی در ارسال وجود دارد.");
+          const res = await fetch(`https://api.telegram.org/bot${TOKEN}/sendVideo`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chat_id, video: v2boxFileId, caption: "🎥 آموزش نصب و راه‌اندازی کانفیگ در برنامه V2box" })
+          });
+          if (!res.ok) await sendMessage(chat_id, "❌ ویدیوی آموزشی یافت نشد یا مشکلی در ارسال وجود دارد. لطفاً به پشتیبانی اطلاع دهید.");
           return new Response('OK');
         }
         if (text === "💬 راهنمای ارسال پیام به پشتیبانی") {
