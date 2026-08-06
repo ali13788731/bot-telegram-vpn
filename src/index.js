@@ -24,14 +24,45 @@ function escapeHtml(str) {
   return String(str ?? "").replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch]));
 }
 
-// قیمت‌گذاری پلن‌ها (به تومان)
-const PLAN_PRICES = {
-  1: 10000,
-  5: 30000,
-  10: 45000,
-  30: 100000,
-  60: 180000
-};
+// ================= مدیریت پلن‌های اشتراک (کاملاً داینامیک - از جدول plans در دیتابیس خوانده می‌شود) =================
+// پلن‌ها دیگر در کد هاردکد نیستند؛ ادمین از داخل ربات (تنظیمات ربات ← مدیریت پلن‌های اشتراک)
+// می‌تواند پلن جدید بسازد، نام دکمه/مدت/قیمت تک‌کاربره/قیمت چندکاربره/تاریخ انقضای پیشنهاد را ویرایش کند
+// و پلن را به‌جای حذف، غیرفعال یا دوباره فعال کند.
+
+// فقط پلن‌های فعال و هنوز منقضی‌نشده (برای نمایش در لیست خرید)
+async function getActivePlans(db) {
+  const nowShamsi = getShamsiNow().split(/[ ,-]/)[0];
+  const { results } = await db.prepare(
+    "SELECT * FROM plans WHERE is_active = 1 AND (expire_date_shamsi IS NULL OR expire_date_shamsi = '' OR expire_date_shamsi >= ?) ORDER BY sort_order ASC, days ASC"
+  ).bind(nowShamsi).all();
+  return results || [];
+}
+
+// همه پلن‌ها (فعال و غیرفعال) برای پنل مدیریت
+async function getAllPlans(db) {
+  const { results } = await db.prepare("SELECT * FROM plans ORDER BY sort_order ASC, days ASC").all();
+  return results || [];
+}
+
+async function getPlanById(db, id) {
+  return await db.prepare("SELECT * FROM plans WHERE id = ?").bind(id).first();
+}
+
+// برای نمایش تقریبیِ قیمت سرویس‌هایی که قبلاً ثبت شده‌اند (گزارش فروش و لیست سرویس‌های کاربر)
+// چون این سرویس‌ها فقط plan_days را ذخیره کرده‌اند، جدیدترین پلن با همان مدت را به‌عنوان مرجع قیمت برمی‌گردانیم.
+async function getPlanPriceByDays(db, days, isSingle) {
+  const plan = await db.prepare("SELECT price_single, price_multi FROM plans WHERE days = ? ORDER BY is_active DESC, id DESC LIMIT 1").bind(days).first();
+  if (!plan) return 0;
+  return isSingle ? (plan.price_single || 0) : (plan.price_multi || 0);
+}
+
+// نسخه دسته‌ای getPlanPriceByDays برای استفاده داخل حلقه‌های sync (forEach) بدون نیاز به await در هر تکرار
+async function buildDaysPriceMap(db) {
+  const { results } = await db.prepare("SELECT days, price_single, price_multi FROM plans ORDER BY id ASC").all();
+  const map = new Map();
+  (results || []).forEach(p => map.set(p.days, { single: p.price_single || 0, multi: p.price_multi || 0 }));
+  return map;
+}
 
 // ================= توابع تاریخ شمسی =================
 function getShamsiNow() {
@@ -316,11 +347,47 @@ function adminPanelMenu() {
 function settingsMenu() {
   return {
     keyboard: [
+      [{ text: "🧩 مدیریت پلن‌های اشتراک" }],
       [{ text: "🎟 مدیریت کدهای تخفیف" }],
       [{ text: "🗑 پاک کردن کامل دیتابیس" }],
       [{ text: "🔙 بازگشت به پنل مدیریت" }]
     ],
     resize_keyboard: true
+  };
+}
+
+// ================= پنل مدیریت پلن‌های اشتراک =================
+async function renderPlansListMessage(db) {
+  const plans = await getAllPlans(db);
+  if (!plans.length) {
+    return { msg: "📭 هیچ پلنی ثبت نشده است.\n\nبرای شروع، یک پلن جدید بسازید:", kb: { inline_keyboard: [[{ text: "➕ افزودن پلن جدید", callback_data: "admaddplan" }]] } };
+  }
+  let msg = "🧩 <b>مدیریت پلن‌های اشتراک</b>\n\n";
+  const rows = [];
+  plans.forEach(p => {
+    const statusIcon = p.is_active ? "✅" : "🚫";
+    const expTxt = p.expire_date_shamsi ? `\n⏳ در دسترس تا: ${p.expire_date_shamsi}` : "";
+    msg += `${statusIcon} <b>#${p.id} - ${escapeHtml(p.label)}</b>\n⏱ مدت: ${p.days} روز\n👤 تک‌کاربره: ${(p.price_single || 0).toLocaleString('fa-IR')} تومان\n👥 چندکاربره: ${(p.price_multi || 0).toLocaleString('fa-IR')} تومان${expTxt}\n➖➖➖➖\n`;
+    rows.push([
+      { text: `✏️ ویرایش #${p.id}`, callback_data: `admeditplan_${p.id}` },
+      { text: p.is_active ? `🚫 غیرفعال #${p.id}` : `✅ فعال‌سازی #${p.id}`, callback_data: `admtoggleplan_${p.id}` },
+      { text: `🗑 حذف #${p.id}`, callback_data: `admdelplan_${p.id}` }
+    ]);
+  });
+  rows.push([{ text: "➕ افزودن پلن جدید", callback_data: "admaddplan" }]);
+  return { msg, kb: { inline_keyboard: rows } };
+}
+
+function planEditFieldsKeyboard(planId) {
+  return {
+    inline_keyboard: [
+      [{ text: "✏️ نام دکمه", callback_data: `admeditplanfield_${planId}_label` }],
+      [{ text: "⏱ مدت اعتبار (روز)", callback_data: `admeditplanfield_${planId}_days` }],
+      [{ text: "👤 قیمت تک‌کاربره", callback_data: `admeditplanfield_${planId}_price_single` }],
+      [{ text: "👥 قیمت چندکاربره", callback_data: `admeditplanfield_${planId}_price_multi` }],
+      [{ text: "⏳ تاریخ پایان پیشنهاد (اختیاری)", callback_data: `admeditplanfield_${planId}_expire_date_shamsi` }],
+      [{ text: "🔙 بازگشت به لیست پلن‌ها", callback_data: "admplanslist" }]
+    ]
   };
 }
 
@@ -360,26 +427,27 @@ function tutorialsMenu() {
 const FIXED_MENU_BUTTON_TEXTS = new Set([
   "🤝 دعوت دوستان (هدیه ۵ روزه)", "🎟 مدیریت کدهای تخفیف", "📊 گزارش فروش", "🎁 دریافت اکانت رایگان (تست)", "🛒 خرید سرویس", "📚 آموزش‌ها", "📦 سرویس‌های من", "👤 وضعیت من", "📞 ارتباط با پشتیبانی", "⚙️ ورود به پنل مدیریت حرفه‌ای",
   "👥 لیست کامل کاربران و خریدها", "🛠 مدیریت سرویس‌های کاربر", "📖 راهنمای پنل مدیریت", "🏠 بازگشت به منوی اصلی",
-  "📢 ارسال اطلاعیه", "⚙️ تنظیمات ربات", "🗑 پاک کردن کامل دیتابیس", "🔙 بازگشت به پنل مدیریت",
+  "📢 ارسال اطلاعیه", "⚙️ تنظیمات ربات", "🗑 پاک کردن کامل دیتابیس", "🔙 بازگشت به پنل مدیریت", "🧩 مدیریت پلن‌های اشتراک",
   "⏳ صفر کردن زمان", "➕ تمدید / شارژ", "👥 تبدیل به چندکاربره", "👤 تبدیل به تک‌کاربره", "✅ وصل فوری", "🛑 قطع فوری", "✏️ ویرایش ورکر",
   "🔙 مرحله قبل", "🔙 بازگشت به پنل کاربری", "❌ لغو عملیات",
   "🚀 آموزش برنامه v2ray برای نصب کانفیگ", "📥 آموزش برنامه v2box برای نصب کانفیگ", "💬 راهنمای ارسال پیام به پشتیبانی"
 ]);
 
-function daysKeyboard() {
-  return {
-    inline_keyboard: [
-      [
-        { text: `۵ روزه نامحدود (${(PLAN_PRICES[5]/1000).toLocaleString('fa-IR')} ه.ت)`, callback_data: "plan_5" },
-        { text: `۱ روزه نامحدود (${(PLAN_PRICES[1]/1000).toLocaleString('fa-IR')} ه.ت)`, callback_data: "plan_1" }
-      ],
-      [
-        { text: `۳۰ روزه نامحدود (${(PLAN_PRICES[30]/1000).toLocaleString('fa-IR')} ه.ت)`, callback_data: "plan_30" },
-        { text: `۱۰ روزه نامحدود (${(PLAN_PRICES[10]/1000).toLocaleString('fa-IR')} ه.ت)`, callback_data: "plan_10" }
-      ],
-      [{ text: `۶۰ روزه ویژه نامحدود (${(PLAN_PRICES[60]/1000).toLocaleString('fa-IR')} هزار تومان)`, callback_data: "plan_60" }]
-    ]
-  };
+// کیبورد خرید سرویس - کاملاً داینامیک، از جدول plans خوانده می‌شود
+async function daysKeyboard(db) {
+  const plans = await getActivePlans(db);
+  if (!plans.length) return { inline_keyboard: [] };
+
+  const rows = [];
+  for (let i = 0; i < plans.length; i += 2) {
+    const row = [];
+    const p1 = plans[i];
+    row.push({ text: `${p1.label} (از ${Math.round((p1.price_single || p1.price_multi || 0) / 1000).toLocaleString('fa-IR')} ه.ت)`, callback_data: `plan_${p1.id}` });
+    const p2 = plans[i + 1];
+    if (p2) row.push({ text: `${p2.label} (از ${Math.round((p2.price_single || p2.price_multi || 0) / 1000).toLocaleString('fa-IR')} ه.ت)`, callback_data: `plan_${p2.id}` });
+    rows.push(row);
+  }
+  return { inline_keyboard: rows };
 }
 
 // ================= هندلر اصلی کلودفلر ورکر =================
@@ -767,10 +835,7 @@ export default {
                if (!isNaN(d)) expView = new Intl.DateTimeFormat('fa-IR', { timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(d);
             }
 
-            let planPrice = PLAN_PRICES[s.plan_days] || 0;
-            if (s.plan_type.includes('چند کاربره')) {
-                planPrice += 20000;
-            }
+            let planPrice = await getPlanPriceByDays(db, s.plan_days, !s.plan_type.includes('چند کاربره'));
             let priceText = planPrice > 0 ? `${planPrice.toLocaleString('fa-IR')} تومان` : "تست / رایگان";
 
             let srvMsg = `📦 <b>شناسه سرویس:</b> #${s.id}\n`;
@@ -869,6 +934,7 @@ export default {
           const yearStr = todayStr.substring(0, 4);
 
           const { results: allServices } = await db.prepare("SELECT plan_days, plan_type, purchase_date_shamsi FROM services").all();
+          const priceMap = await buildDaysPriceMap(db);
 
           let dailyCount = 0, dailyIncome = 0;
           let monthlyCount = 0, monthlyIncome = 0;
@@ -879,9 +945,9 @@ export default {
             if (!s.purchase_date_shamsi) return;
             const pDate = s.purchase_date_shamsi;
             
-            // محاسبه قیمت بر اساس روز و حالت چندکاربره
-            let price = PLAN_PRICES[s.plan_days] || 0;
-            if (s.plan_type.includes('چند کاربره')) price += 20000;
+            // محاسبه قیمت بر اساس روز و حالت چندکاربره (از جدول پلن‌های داینامیک)
+            const priceEntry = priceMap.get(s.plan_days) || { single: 0, multi: 0 };
+            let price = s.plan_type.includes('چند کاربره') ? priceEntry.multi : priceEntry.single;
             if (s.plan_type.includes('رایگان') || s.plan_type.includes('تست')) price = 0;
 
             totalCount++;
@@ -909,7 +975,8 @@ export default {
           `2️⃣ <b>مدیریت سرویس‌های کاربر:</b> روی دکمه «🛠 مدیریت سرویس‌های کاربر» بزنید. حالا می‌توانید بر اساس <b>آیدی، نام، یوزرنیم یا آدرس ورکر</b> جستجو کنید. گزینه‌های جدید مانند <b>قطع فوری، صفر کردن زمان و تغییر کاربری</b> در همانجا قابل استفاده هستند.\n\n` +
           `3️⃣ <b>پاسخ به پیام‌های شخصی:</b> هنگامی که کاربر پیامی بفرستد، دکمه «💬 پاسخ به این پیام» زیر آن قرار می‌گیرد تا مستقیماً به کاربر پاسخ دهید.\n\n` +
           `4️⃣ <b>ارسال اطلاعیه:</b> از دکمه «📢 ارسال اطلاعیه» استفاده کنید و انتخاب کنید که برای <b>همه کاربران</b> یا فقط <b>کاربران خاص</b> (با آیدی/یوزرنیم) ارسال شود. هر نوع پیام (متن، عکس، لینک و ...) که ارسال کنید، پس از تایید شما عیناً برای مقصد انتخاب‌شده فرستاده می‌شود.\n\n` +
-          `5️⃣ <b>تنظیمات ربات:</b> از دکمه «⚙️ تنظیمات ربات» می‌توانید در صورت نیاز کل دیتابیس (کاربران و سرویس‌ها) را به‌طور کامل و غیرقابل‌بازگشت پاک کنید.`;
+          `5️⃣ <b>تنظیمات ربات:</b> از دکمه «⚙️ تنظیمات ربات» می‌توانید در صورت نیاز کل دیتابیس (کاربران و سرویس‌ها) را به‌طور کامل و غیرقابل‌بازگشت پاک کنید.\n\n` +
+          `6️⃣ <b>مدیریت پلن‌های اشتراک:</b> از مسیر «⚙️ تنظیمات ربات ← 🧩 مدیریت پلن‌های اشتراک» می‌توانید پلن جدید بسازید (نام دکمه، مدت اعتبار، قیمت تک‌کاربره و چندکاربره، تاریخ پایان پیشنهاد اختیاری)، پلن‌های موجود را ویرایش کنید، و به‌جای حذف کامل، آن‌ها را فقط غیرفعال/فعال کنید تا از لیست خرید کاربران خارج/وارد شوند.`;
           await sendMessage(chat_id, guideText, adminPanelMenu());
           return new Response('OK');
         }
@@ -923,16 +990,15 @@ export default {
             }
 
             let msgText = "📦 <b>لیست تمامی سرویس‌های شما:</b>\n\n";
+            const priceMapMy = await buildDaysPriceMap(db);
 
             userServices.forEach((s, idx) => {
               msgText += `🔹 <b>سرویس ${idx + 1}:</b>\n`;
               msgText += `🛍 <b>پکیج:</b> ${planDaysLabel(s.plan_days)} (${s.plan_type})\n`;
               msgText += `📅 <b>تاریخ ثبت:</b> ${s.purchase_date_shamsi}\n`;
 
-              let planPrice = PLAN_PRICES[s.plan_days] || 0;
-              if (s.plan_type.includes('چند کاربره')) {
-                  planPrice += 20000;
-              }
+              const priceEntryMy = priceMapMy.get(s.plan_days) || { single: 0, multi: 0 };
+              let planPrice = s.plan_type.includes('چند کاربره') ? priceEntryMy.multi : priceEntryMy.single;
               let priceText = planPrice > 0 ? `${planPrice.toLocaleString('fa-IR')} تومان` : "تست / رایگان";
               msgText += `💳 <b>مبلغ خرید:</b> ${priceText}\n`;
 
@@ -1135,8 +1201,13 @@ export default {
 		
 
         if (text === "🛒 خرید سرویس" && user_id !== ADMIN_ID) {
+          const buyKb = await daysKeyboard(db);
+          if (!buyKb.inline_keyboard.length) {
+            await sendMessage(chat_id, "⛔ در حال حاضر هیچ پلن فعالی برای خرید موجود نیست. لطفاً بعداً مراجعه کنید یا با پشتیبانی تماس بگیرید.");
+            return new Response('OK');
+          }
           const rules = "⚠️ <b>قوانین سرویس:</b>\nسرویس‌های ما کاملاً نامحدود هستند، اما شامل قانون مصرف منصفانه می‌شوند. در صورت مصرف غیرعادی، اکانت موقتاً قطع شده و از روز بعد متصل می‌گردد.\n\n⏳ لطفاً مدت زمان سرویس خود را انتخاب کنید:";
-          await sendMessage(chat_id, rules, daysKeyboard());
+          await sendMessage(chat_id, rules, buyKb);
           await sendMessage(chat_id, "در صورت نیاز به انصراف، از دکمه‌های پایین استفاده کنید:", backAndSupportKeyboard());
           return new Response('OK');
         }
@@ -1213,7 +1284,7 @@ export default {
           const lastSrv = await db.prepare("SELECT cf_domain FROM services WHERE user_id = ? ORDER BY id DESC LIMIT 1").bind(user_id).first();
           const workerText = lastSrv ? `🌐 <b>ورکر فعلی کاربر:</b> <code>${lastSrv.cf_domain}</code>\n` : `🌐 <b>ورکر فعلی کاربر:</b> ندارد (نیاز به ثبت ورکر جدید)\n`;
 
-          let caption = `🧾 <b>درخواست پرداخت جدید</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>\n📅 <b>زمان ثبت:</b> ${getShamsiNow()}\n📦 پلن: ${planDaysLabel(info.days)} - ${info.type}\n${workerText}`;
+          let caption = `🧾 <b>درخواست پرداخت جدید</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>\n📅 <b>زمان ثبت:</b> ${getShamsiNow()}\n📦 پلن: ${info.plan_label || planDaysLabel(info.days)} - ${info.type}\n💵 مبلغ: ${(info.price_paid || 0).toLocaleString('fa-IR')} تومان\n${workerText}`;
           const isSingle = info.type.includes('یک کاربره') ? '1' : '0';
           
           const admMarkup = { inline_keyboard: [
@@ -1390,6 +1461,101 @@ export default {
           await sendMessage(chat_id, "⚙️ <b>تنظیمات ربات</b>\n\nاز گزینه‌های زیر استفاده کنید:", settingsMenu());
           return new Response('OK');
         }
+
+        // ================= مدیریت پلن‌های اشتراک =================
+        if (text === "🧩 مدیریت پلن‌های اشتراک" && user_id === ADMIN_ID) {
+          await clearState(db, ADMIN_ID);
+          const { msg, kb } = await renderPlansListMessage(db);
+          await sendMessage(ADMIN_ID, msg, kb);
+          return new Response('OK');
+        }
+
+        // مراحل ساخت پلن جدید (نام دکمه → مدت روز → قیمت تک‌کاربره → قیمت چندکاربره → تاریخ پایان پیشنهاد)
+        if (user_id === ADMIN_ID && state && state.step === 'WAIT_PLAN_LABEL') {
+          const label = text.trim();
+          if (!label) {
+            await sendMessage(ADMIN_ID, "❌ نام دکمه نمی‌تواند خالی باشد. لطفاً دوباره ارسال کنید:", pendingMenu());
+            return new Response('OK');
+          }
+          await setState(db, ADMIN_ID, { step: 'WAIT_PLAN_DAYS', new_plan: { label } });
+          await sendMessage(ADMIN_ID, "⏳ <b>مدت اعتبار اشتراک</b> را بر حسب روز وارد کنید (مثلاً: 30):", pendingMenu());
+          return new Response('OK');
+        }
+
+        if (user_id === ADMIN_ID && state && state.step === 'WAIT_PLAN_DAYS') {
+          const days = parseInt(text.trim());
+          if (isNaN(days) || days <= 0) {
+            await sendMessage(ADMIN_ID, "❌ لطفاً یک عدد معتبر برای تعداد روز وارد کنید:", pendingMenu());
+            return new Response('OK');
+          }
+          const newPlan = { ...state.new_plan, days };
+          await setState(db, ADMIN_ID, { step: 'WAIT_PLAN_PRICE_SINGLE', new_plan: newPlan });
+          await sendMessage(ADMIN_ID, "👤 <b>قیمت حالت تک‌کاربره</b> را به تومان وارد کنید (مثلاً: 45000):", pendingMenu());
+          return new Response('OK');
+        }
+
+        if (user_id === ADMIN_ID && state && state.step === 'WAIT_PLAN_PRICE_SINGLE') {
+          const priceSingle = parseInt(text.trim());
+          if (isNaN(priceSingle) || priceSingle < 0) {
+            await sendMessage(ADMIN_ID, "❌ لطفاً یک عدد معتبر برای قیمت وارد کنید:", pendingMenu());
+            return new Response('OK');
+          }
+          const newPlan = { ...state.new_plan, price_single: priceSingle };
+          await setState(db, ADMIN_ID, { step: 'WAIT_PLAN_PRICE_MULTI', new_plan: newPlan });
+          await sendMessage(ADMIN_ID, "👥 <b>قیمت حالت چندکاربره</b> را به تومان وارد کنید (اگر نمی‌خواهید این پلن حالت چندکاربره داشته باشد، عدد 0 ارسال کنید):", pendingMenu());
+          return new Response('OK');
+        }
+
+        if (user_id === ADMIN_ID && state && state.step === 'WAIT_PLAN_PRICE_MULTI') {
+          const priceMulti = parseInt(text.trim());
+          if (isNaN(priceMulti) || priceMulti < 0) {
+            await sendMessage(ADMIN_ID, "❌ لطفاً یک عدد معتبر برای قیمت وارد کنید:", pendingMenu());
+            return new Response('OK');
+          }
+          const newPlan = { ...state.new_plan, price_multi: priceMulti };
+          await setState(db, ADMIN_ID, { step: 'WAIT_PLAN_EXPIRY', new_plan: newPlan });
+          const expKb = { inline_keyboard: [[{ text: "♾ بدون تاریخ انقضا", callback_data: "planexpiry_none" }]] };
+          await sendMessage(ADMIN_ID, "⏳ اگر می‌خواهید این پلن فقط تا تاریخ خاصی در دسترس باشد (پیشنهاد ویژه/زمان‌دار)، تاریخ را به شمسی وارد کنید (مثال: 1403/12/29).\n\nدر غیر این صورت روی دکمه زیر بزنید:", expKb);
+          return new Response('OK');
+        }
+
+        if (user_id === ADMIN_ID && state && state.step === 'WAIT_PLAN_EXPIRY') {
+          const expireDate = text.trim();
+          const np = state.new_plan;
+          const { results: maxRow } = await db.prepare("SELECT COALESCE(MAX(sort_order), 0) as m FROM plans").all();
+          const nextOrder = (maxRow && maxRow[0] ? maxRow[0].m : 0) + 1;
+          await db.prepare("INSERT INTO plans (label, days, price_single, price_multi, is_active, sort_order, expire_date_shamsi) VALUES (?, ?, ?, ?, 1, ?, ?)")
+            .bind(np.label, np.days, np.price_single, np.price_multi, nextOrder, expireDate || null).run();
+          await clearState(db, ADMIN_ID);
+          await sendMessage(ADMIN_ID, `✅ پلن <b>${escapeHtml(np.label)}</b> با موفقیت ساخته شد و اکنون فعال است.`);
+          const { msg, kb } = await renderPlansListMessage(db);
+          await sendMessage(ADMIN_ID, msg, kb);
+          return new Response('OK');
+        }
+
+        // ویرایش مقدار یک فیلد از پلن
+        if (user_id === ADMIN_ID && state && state.step === 'WAIT_PLAN_EDIT_VALUE') {
+          const { plan_id, field } = state;
+          let value = text.trim();
+          const numericFields = ['days', 'price_single', 'price_multi'];
+          if (numericFields.includes(field)) {
+            const n = parseInt(value);
+            if (isNaN(n) || n < 0) {
+              await sendMessage(ADMIN_ID, "❌ لطفاً یک عدد معتبر وارد کنید:", pendingMenu());
+              return new Response('OK');
+            }
+            value = n;
+          }
+          if (field === 'expire_date_shamsi' && (value === '-' || value === '' || value.toLowerCase() === 'حذف')) {
+            value = null;
+          }
+          await db.prepare(`UPDATE plans SET ${field} = ? WHERE id = ?`).bind(value, plan_id).run();
+          await clearState(db, ADMIN_ID);
+          await sendMessage(ADMIN_ID, "✅ پلن با موفقیت به‌روزرسانی شد.");
+          const { msg, kb } = await renderPlansListMessage(db);
+          await sendMessage(ADMIN_ID, msg, kb);
+          return new Response('OK');
+        }
 		
 		
 		// ================= مدیریت کدهای تخفیف =================
@@ -1527,9 +1693,10 @@ export default {
 
           let targetCount = 0, targetIncome = 0;
           if (targetServices && targetServices.length > 0) {
+            const priceMapReport = await buildDaysPriceMap(db);
             targetServices.forEach(s => {
-              let price = PLAN_PRICES[s.plan_days] || 0;
-              if (s.plan_type.includes('چند کاربره')) price += 20000;
+              const priceEntryReport = priceMapReport.get(s.plan_days) || { single: 0, multi: 0 };
+              let price = s.plan_type.includes('چند کاربره') ? priceEntryReport.multi : priceEntryReport.single;
               if (s.plan_type.includes('رایگان') || s.plan_type.includes('تست')) price = 0;
               targetCount++;
               targetIncome += price;
@@ -1569,13 +1736,14 @@ export default {
              return new Response('OK');
           }
 
-          let basePrice = PLAN_PRICES[state.days] || 0;
-          let multiUserMessage = "";
-          if (state.user_type !== '1') {
-             basePrice += 20000;
-             multiUserMessage = "\n💡 <i>به دلیل انتخاب سرویس چند کاربره، مبلغ ۲۰,۰۰۰ تومان به قیمت پایه افزوده شد.</i>";
+          const plan = await getPlanById(db, state.plan_id);
+          if (!plan) {
+            await sendMessage(chat_id, "❌ این پلن دیگر در دسترس نیست. لطفاً دوباره از منوی «🛒 خرید سرویس» اقدام کنید.", await mainMenu(db, user_id));
+            await clearState(db, user_id);
+            return new Response('OK');
           }
-          
+          const basePrice = state.user_type === '1' ? (plan.price_single || 0) : (plan.price_multi || 0);
+
           const discountAmount = (basePrice * discount.percent) / 100;
           const finalPrice = basePrice - discountAmount;
 
@@ -1583,9 +1751,10 @@ export default {
 
           state.step = 'WAIT_RECEIPT';
           state.timer_start = Date.now();
+          state.price_paid = finalPrice;
           await setState(db, user_id, state);
           
-          const factor = `🎉 <b>کد تخفیف ${discount.percent} درصدی اعمال شد!</b>\n\n💳 <b>فاکتور نهایی ${planDaysLabel(state.days)} (${state.type})</b>\n💵 قیمت اصلی: <s>${basePrice.toLocaleString('fa-IR')} تومان</s>\n🎁 مبلغ قابل پرداخت: <b>${finalPrice.toLocaleString('fa-IR')} تومان</b>${multiUserMessage}\n\nلطفاً مبلغ فوق را واریز کرده و <b>عکس رسید تراکنش</b> را ارسال کنید:\n\n💳 <code>${CARD_NUMBER}</code>\n\n⏱ <i>شما ۱۰ دقیقه فرصت دارید.</i>`;
+          const factor = `🎉 <b>کد تخفیف ${discount.percent} درصدی اعمال شد!</b>\n\n💳 <b>فاکتور نهایی ${escapeHtml(plan.label)} (${state.type})</b>\n💵 قیمت اصلی: <s>${basePrice.toLocaleString('fa-IR')} تومان</s>\n🎁 مبلغ قابل پرداخت: <b>${finalPrice.toLocaleString('fa-IR')} تومان</b>\n\nلطفاً مبلغ فوق را واریز کرده و <b>عکس رسید تراکنش</b> را ارسال کنید:\n\n💳 <code>${CARD_NUMBER}</code>\n\n⏱ <i>شما ۱۰ دقیقه فرصت دارید.</i>`;
           
           await sendMessage(chat_id, factor, backAndSupportKeyboard());
           return new Response('OK');
@@ -1866,8 +2035,7 @@ export default {
                const d = new Date(s.exp_date);
                if (!isNaN(d)) expView = new Intl.DateTimeFormat('fa-IR', { timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(d);
             }
-            let planPrice = PLAN_PRICES[s.plan_days] || 0;
-            if (s.plan_type.includes('چند کاربره')) planPrice += 20000;
+            let planPrice = await getPlanPriceByDays(db, s.plan_days, !s.plan_type.includes('چند کاربره'));
             let priceText = planPrice > 0 ? `${planPrice.toLocaleString('fa-IR')} تومان` : "تست / رایگان";
 
             let srvMsg = `📦 <b>شناسه سرویس:</b> #${s.id}\n`;
@@ -2016,18 +2184,123 @@ export default {
           }
         }
 
+        // ================= مدیریت پلن‌های اشتراک (CRUD) =================
+        else if (data === 'admplanslist') {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          await clearState(db, ADMIN_ID);
+          const { msg, kb } = await renderPlansListMessage(db);
+          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: msg, reply_markup: kb, parse_mode: "HTML" });
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+        }
+
+        else if (data === 'admaddplan') {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          await setState(db, ADMIN_ID, { step: 'WAIT_PLAN_LABEL' });
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+          await sendMessage(ADMIN_ID, "📝 <b>ساخت پلن جدید</b>\n\nابتدا <b>نام دکمه</b> این پلن را که کاربر می‌بیند وارد کنید (مثلاً: ۳۰ روزه نامحدود):", pendingMenu());
+        }
+
+        else if (data === 'planexpiry_none') {
+          if (user_id !== ADMIN_ID || !state || state.step !== 'WAIT_PLAN_EXPIRY') return new Response('OK');
+          const np = state.new_plan;
+          const { results: maxRow } = await db.prepare("SELECT COALESCE(MAX(sort_order), 0) as m FROM plans").all();
+          const nextOrder = (maxRow && maxRow[0] ? maxRow[0].m : 0) + 1;
+          await db.prepare("INSERT INTO plans (label, days, price_single, price_multi, is_active, sort_order, expire_date_shamsi) VALUES (?, ?, ?, ?, 1, ?, NULL)")
+            .bind(np.label, np.days, np.price_single, np.price_multi, nextOrder).run();
+          await clearState(db, ADMIN_ID);
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `✅ پلن <b>${escapeHtml(np.label)}</b> بدون تاریخ انقضا ساخته شد.`, parse_mode: "HTML" });
+          const { msg, kb } = await renderPlansListMessage(db);
+          await sendMessage(ADMIN_ID, msg, kb);
+        }
+
+        else if (data.startsWith('admeditplanfield_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const parts = data.split('_');
+          const planId = parts[1];
+          const field = parts.slice(2).join('_'); // برای price_single / price_multi / expire_date_shamsi
+          const plan = await getPlanById(db, planId);
+          if (!plan) {
+            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ پلن یافت نشد.", show_alert: true });
+            return new Response('OK');
+          }
+          await setState(db, ADMIN_ID, { step: 'WAIT_PLAN_EDIT_VALUE', plan_id: planId, field });
+          const fieldLabels = { label: "نام دکمه", days: "مدت اعتبار (روز)", price_single: "قیمت تک‌کاربره (تومان)", price_multi: "قیمت چندکاربره (تومان)", expire_date_shamsi: "تاریخ پایان پیشنهاد (شمسی) - برای حذف تاریخ، علامت - را ارسال کنید" };
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+          await sendMessage(ADMIN_ID, `✏️ مقدار جدید برای <b>${fieldLabels[field] || field}</b> پلن #${plan.id} را وارد کنید:\n\nمقدار فعلی: <code>${escapeHtml(String(plan[field] ?? '-'))}</code>`, pendingMenu());
+        }
+
+        else if (data.startsWith('admeditplan_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const planId = data.split('_')[1];
+          const plan = await getPlanById(db, planId);
+          if (!plan) {
+            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ پلن یافت نشد.", show_alert: true });
+            return new Response('OK');
+          }
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `✏️ <b>ویرایش پلن #${plan.id} - ${escapeHtml(plan.label)}</b>\n\nکدام مقدار را می‌خواهید ویرایش کنید؟`, reply_markup: planEditFieldsKeyboard(plan.id), parse_mode: "HTML" });
+        }
+
+        else if (data.startsWith('admtoggleplan_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const planId = data.split('_')[1];
+          const plan = await getPlanById(db, planId);
+          if (!plan) {
+            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ پلن یافت نشد.", show_alert: true });
+            return new Response('OK');
+          }
+          await db.prepare("UPDATE plans SET is_active = ? WHERE id = ?").bind(plan.is_active ? 0 : 1, plan.id).run();
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: plan.is_active ? "🚫 پلن غیرفعال شد." : "✅ پلن فعال شد." });
+          const { msg, kb } = await renderPlansListMessage(db);
+          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: msg, reply_markup: kb, parse_mode: "HTML" });
+        }
+
+        else if (data.startsWith('admdelplanconfirm_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const planId = data.split('_')[1];
+          await db.prepare("DELETE FROM plans WHERE id = ?").bind(planId).run();
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "🗑 پلن حذف شد." });
+          const { msg, kb } = await renderPlansListMessage(db);
+          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: msg, reply_markup: kb, parse_mode: "HTML" });
+        }
+
+        else if (data.startsWith('admdelplan_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const planId = data.split('_')[1];
+          const plan = await getPlanById(db, planId);
+          if (!plan) {
+            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ پلن یافت نشد.", show_alert: true });
+            return new Response('OK');
+          }
+          const confirmKb = { inline_keyboard: [
+            [{ text: "✅ بله، حذف شود", callback_data: `admdelplanconfirm_${plan.id}` }],
+            [{ text: "🚫 نه، فقط غیرفعال کن", callback_data: `admtoggleplan_${plan.id}` }],
+            [{ text: "❌ انصراف", callback_data: "admplanslist" }]
+          ] };
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `⚠️ آیا از <b>حذف کامل</b> پلن #${plan.id} - ${escapeHtml(plan.label)} مطمئن هستید؟\n\n💡 اگر فقط می‌خواهید موقتاً از دسترس خارج شود (و بعداً دوباره فعالش کنید)، بهتر است به‌جای حذف، آن را «غیرفعال» کنید.`, reply_markup: confirmKb, parse_mode: "HTML" });
+        }
+
         else if (data.startsWith('plan_')) {
-          const days = data.split('_')[1];
-          state.days = days;
+          const planId = data.split('_')[1];
+          const plan = await getPlanById(db, planId);
+          if (!plan || !plan.is_active) {
+            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ این پلن دیگر در دسترس نیست. لطفاً از منوی خرید سرویس مجدداً اقدام کنید.", show_alert: true });
+            return new Response('OK');
+          }
+          state.plan_id = plan.id;
+          state.plan_label = plan.label;
+          state.days = plan.days;
           state.hours = 0;
           state.is_test = false;
           await setState(db, user_id, state);
-          const kb = { 
-            inline_keyboard: [
-              [{ text: "👥 چند کاربره", callback_data: "users_multi" }, { text: "👤 یک کاربره", callback_data: "users_1" }]
-            ] 
-          };
-          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: "👥 نوع مصرف را مشخص کنید:", reply_markup: kb, parse_mode: "HTML" });
+
+          const typeButtons = [];
+          if (plan.price_single > 0) typeButtons.push({ text: `👤 یک کاربره (${plan.price_single.toLocaleString('fa-IR')} ت)`, callback_data: "users_1" });
+          if (plan.price_multi > 0) typeButtons.push({ text: `👥 چند کاربره (${plan.price_multi.toLocaleString('fa-IR')} ت)`, callback_data: "users_multi" });
+          const kb = { inline_keyboard: [typeButtons] };
+          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `📦 پلن انتخابی: <b>${escapeHtml(plan.label)}</b>\n\n👥 نوع مصرف را مشخص کنید:`, reply_markup: kb, parse_mode: "HTML" });
         }
 
         else if (data.startsWith('users_')) {
@@ -2053,19 +2326,21 @@ export default {
         // ================= پردازش دکمه ادامه بدون تخفیف =================
         else if (data === 'skip_discount') {
           if (!state || state.step !== 'WAIT_DISCOUNT_CODE') return new Response('OK');
-          
+
+          const plan = await getPlanById(db, state.plan_id);
+          if (!plan) {
+            await sendMessage(chat_id, "❌ این پلن دیگر در دسترس نیست. لطفاً دوباره از منوی «🛒 خرید سرویس» اقدام کنید.", await mainMenu(db, user_id));
+            await clearState(db, user_id);
+            return new Response('OK');
+          }
+
           state.step = 'WAIT_RECEIPT';
           state.timer_start = Date.now();
+          const planPrice = state.user_type === '1' ? (plan.price_single || 0) : (plan.price_multi || 0);
+          state.price_paid = planPrice;
           await setState(db, user_id, state);
-          
-          let planPrice = PLAN_PRICES[state.days] || 0;
-          let multiUserMessage = "";
-          if (state.user_type !== '1') {
-            planPrice += 20000;
-            multiUserMessage = "\n💡 <i>به دلیل انتخاب سرویس چند کاربره، مبلغ ۲۰,۰۰۰ تومان به قیمت پایه افزوده شد.</i>";
-          }
-          
-          const factor = `💳 <b>فاکتور سرویس ${planDaysLabel(state.days)} (${state.type})</b>\n💵 مبلغ قابل پرداخت: <b>${planPrice.toLocaleString('fa-IR')} تومان</b>${multiUserMessage}\n\nلطفاً مبلغ فوق را واریز کرده و <b>عکس رسید تراکنش</b> را همینجا ارسال کنید:\n\n💳 <code>${CARD_NUMBER}</code>\n\n⏱ <i>شما ۱۰ دقیقه فرصت دارید.</i>`;
+
+          const factor = `💳 <b>فاکتور سرویس ${escapeHtml(plan.label)} (${state.type})</b>\n💵 مبلغ قابل پرداخت: <b>${planPrice.toLocaleString('fa-IR')} تومان</b>\n\nلطفاً مبلغ فوق را واریز کرده و <b>عکس رسید تراکنش</b> را همینجا ارسال کنید:\n\n💳 <code>${CARD_NUMBER}</code>\n\n⏱ <i>شما ۱۰ دقیقه فرصت دارید.</i>`;
           await callTelegram('deleteMessage', { chat_id, message_id: msg_id });
           await sendMessage(chat_id, factor, backAndSupportKeyboard());
           return new Response('OK');
