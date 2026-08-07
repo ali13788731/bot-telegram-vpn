@@ -415,8 +415,6 @@ async function updateCloudflareExp(domain, daysToAdd, hoursToAdd = 0, singleUser
 // ================= کیبوردها =================
 async function mainMenu(db, user_id) {
   // پنل خرید فقط مخصوص کاربران عادی است؛ ادمین اصلاً این منو را نمی‌بیند.
-  // دکمه «دعوت دوستان» فقط زمانی نمایش داده می‌شود که کاربر حداقل یک سرویس با ورکر ثبت‌شده داشته باشد.
-  const hasWorker = await db.prepare("SELECT 1 FROM services WHERE user_id = ? AND cf_domain IS NOT NULL AND cf_domain != '' LIMIT 1").bind(user_id).first();
   const trialCfg = await getTrialConfig(db);
   const festivalCfg = await getFestivalConfig(db);
   const referralCfg = await getReferralConfig(db);
@@ -427,6 +425,7 @@ async function mainMenu(db, user_id) {
   keyboard.push([{ text: "🛒 خرید سرویس" }]);
 
   keyboard.push([{ text: "📦 سرویس‌های من" }, { text: "👤 وضعیت من" }]);
+  keyboard.push([{ text: "💰 کیف پول" }]);
 
   // دکمه اکانت تست فقط زمانی نمایش داده می‌شود که ادمین آن را فعال کرده باشد
   if (trialCfg.is_active) {
@@ -440,7 +439,8 @@ async function mainMenu(db, user_id) {
 
   keyboard.push([{ text: "📚 آموزش‌ها" }]);
 
-  if (referralCfg.is_active && hasWorker) {
+  // دکمه «دعوت دوستان» به محض فعال بودن سیستم توسط ادمین برای همه کاربران نمایش داده می‌شود
+  if (referralCfg.is_active) {
     keyboard.push([{ text: referralCfg.button_text }]);
   }
   keyboard.push([{ text: "📞 ارتباط با پشتیبانی" }]);
@@ -653,7 +653,7 @@ function tutorialsMenu() {
 // ================= مجموعه متن تمام دکمه‌های ثابت (کیبورد پایین صفحه) =================
 // برای تشخیص این‌که آیا متن ارسالی توسط ادمین «فشردن یک دکمه منو» است یا «ورودی واقعی» (مثل آدرس ورکر)
 const FIXED_MENU_BUTTON_TEXTS = new Set([
-  "🎟 مدیریت کدهای تخفیف", "📊 گزارش فروش", "🎁 دریافت اکانت رایگان (تست)", "🛒 خرید سرویس", "📚 آموزش‌ها", "📦 سرویس‌های من", "👤 وضعیت من", "📞 ارتباط با پشتیبانی", "⚙️ ورود به پنل مدیریت حرفه‌ای",
+  "🎟 مدیریت کدهای تخفیف", "📊 گزارش فروش", "🎁 دریافت اکانت رایگان (تست)", "🛒 خرید سرویس", "📚 آموزش‌ها", "📦 سرویس‌های من", "👤 وضعیت من", "💰 کیف پول", "📞 ارتباط با پشتیبانی", "⚙️ ورود به پنل مدیریت حرفه‌ای",
   "👥 لیست کامل کاربران و خریدها", "🛠 مدیریت سرویس‌های کاربر", "📖 راهنمای پنل مدیریت", "🏠 بازگشت به منوی اصلی",
   "📢 ارسال اطلاعیه", "⚙️ تنظیمات ربات", "🗑 مدیریت و پاک‌سازی داده‌ها", "🎁 مدیریت اکانت تست و جشنواره", "🤝 مدیریت سیستم دعوت دوستان", "🔙 بازگشت به پنل مدیریت", "🧩 مدیریت پلن‌های اشتراک", "🎥 مدیریت ویدیوهای آموزشی",
   "⏳ صفر کردن زمان", "➕ تمدید / شارژ", "👥 تبدیل به چندکاربره", "👤 تبدیل به تک‌کاربره", "✅ وصل فوری", "🛑 قطع فوری", "✏️ ویرایش ورکر",
@@ -690,6 +690,81 @@ function autoRowKeyboard(buttons, maxRowChars = 52, maxPerRow = 3) {
   }
   if (currentRow.length) rows.push(currentRow);
   return { inline_keyboard: rows };
+}
+
+// ================= سیستم کیف پول =================
+
+// موجودی فعلی کیف پول یک کاربر (تومان)
+async function getWalletBalance(db, user_id) {
+  const row = await db.prepare("SELECT wallet_balance FROM users WHERE user_id = ?").bind(user_id).first();
+  return (row && row.wallet_balance) || 0;
+}
+
+// در صورتی که سفارشی که در حال لغو/رد شدن یا timeout است مبلغی از کیف پول کسر کرده باشد،
+// آن مبلغ را به موجودی کاربر برمی‌گرداند (فقط یک‌بار، با فلگ wallet_refunded روی خودِ state جلوگیری از برگشت دوباره می‌شود)
+async function refundWalletIfPending(db, user_id, state) {
+  if (state && state.wallet_used > 0 && !state.wallet_refunded) {
+    await db.prepare("UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + ? WHERE user_id = ?").bind(state.wallet_used, user_id).run();
+    return state.wallet_used;
+  }
+  return 0;
+}
+
+// ================= پردازش نهایی پرداخت خرید سرویس با در نظر گرفتن موجودی کیف پول =================
+// finalPrice: مبلغ نهایی قابل پرداخت این سفارش (پس از اعمال کد تخفیف در صورت وجود)
+// - اگر موجودی کیف پول کل مبلغ را پوشش دهد: مرحله ارسال شماره کارت/رسید کاملاً حذف و درخواست مستقیماً برای تایید ادمین ارسال می‌شود.
+// - اگر موجودی کیف پول کمتر از قیمت باشد: همان مقدار موجودی بلافاصله کسر و فقط مابقی مبلغ برای واریز کارت به کارت از کاربر خواسته می‌شود.
+// - اگر موجودی صفر باشد: دقیقاً مثل قبل، کل مبلغ باید کارت به کارت واریز شود.
+async function proceedToPaymentStep(db, chat_id, user_id, state, plan, finalPrice, fromUser) {
+  const balance = await getWalletBalance(db, user_id);
+  let walletUsed = Math.min(balance, finalPrice);
+
+  if (walletUsed > 0) {
+    const res = await db.prepare("UPDATE users SET wallet_balance = wallet_balance - ? WHERE user_id = ? AND wallet_balance >= ?").bind(walletUsed, user_id, walletUsed).run();
+    // در صورت بروز تداخل همزمان نادر (مثلاً دو درخواست هم‌زمان)، به‌صورت ایمن از کسر کیف پول صرف‌نظر می‌شود
+    if (!res || !res.meta || !res.meta.changes) walletUsed = 0;
+  }
+
+  const remaining = finalPrice - walletUsed;
+  state.price_paid = finalPrice;
+  state.wallet_used = walletUsed;
+  state.remaining_price = remaining;
+
+  const walletLine = walletUsed > 0 ? `💰 مبلغ کسر شده از کیف پول: <b>${walletUsed.toLocaleString('fa-IR')} تومان</b>\n` : "";
+
+  // ================= پوشش کامل هزینه از کیف پول: بدون نیاز به رسید، مستقیم برای تایید ادمین =================
+  if (remaining === 0) {
+    state.step = 'PENDING_ADMIN';
+    state.is_test = false;
+    await setState(db, user_id, state);
+
+    const userLink = getUserLink(user_id, fromUser.first_name, fromUser.username);
+    const lastSrv = await db.prepare("SELECT cf_domain FROM services WHERE user_id = ? ORDER BY id DESC LIMIT 1").bind(user_id).first();
+    const workerText = lastSrv ? `\n🌐 <b>ورکر فعلی:</b> <code>${lastSrv.cf_domain}</code>` : `\n🌐 <b>ورکر فعلی:</b> ندارد (نیاز به ثبت ورکر جدید)`;
+    const isSingle = state.type.includes('یک کاربره') ? '1' : '0';
+
+    const admText = `💰 <b>درخواست خرید - پرداخت کامل از کیف پول</b>\n📦 پلن: ${escapeHtml(plan.label)} (${state.type})\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>\n\n💵 مبلغ کل سرویس: ${finalPrice.toLocaleString('fa-IR')} تومان\n💰 مبلغ کسر شده از کیف پول: ${walletUsed.toLocaleString('fa-IR')} تومان\n💳 مبلغ واریزی کارت به کارت: ۰ تومان (نیازی نبود)${workerText}`;
+    const admKb = { inline_keyboard: [
+        [{ text: "✅ تایید و ارسال لینک", callback_data: `admaprv_buy_${user_id}_${plan.days}_0_${isSingle}` }],
+        [{ text: "❌ رد کردن", callback_data: `admrej_${user_id}` }]
+    ]};
+    const adminMsgRes = await callTelegram('sendMessage', { chat_id: ADMIN_ID, text: admText, reply_markup: admKb, parse_mode: "HTML" });
+    if (adminMsgRes && adminMsgRes.ok) {
+      state.admin_message_id = adminMsgRes.result.message_id;
+      await setState(db, user_id, state);
+    }
+
+    await sendMessage(chat_id, `✅ <b>موجودی کیف پول شما کافی بود!</b>\n\n${walletLine}کل هزینه این سرویس بدون نیاز به واریز کارت به کارت از کیف پول شما کسر شد و درخواست برای تایید به ادمین ارسال گردید. لطفاً تا پاسخ پشتیبانی شکیبا باشید.`, pendingMenu());
+    return;
+  }
+
+  // ================= پوشش بخشی از هزینه یا بدون موجودی: فقط مابقی مبلغ از کاربر خواسته می‌شود =================
+  state.step = 'WAIT_RECEIPT';
+  state.timer_start = Date.now();
+  await setState(db, user_id, state);
+
+  const factor = `💳 <b>فاکتور سرویس ${escapeHtml(plan.label)} (${state.type})</b>\n💵 مبلغ کل سرویس: <b>${finalPrice.toLocaleString('fa-IR')} تومان</b>\n${walletLine}💳 مبلغ باقیمانده جهت واریز: <b>${remaining.toLocaleString('fa-IR')} تومان</b>\n\nلطفاً مبلغ باقیمانده را واریز کرده و <b>عکس رسید تراکنش</b> را همینجا ارسال کنید:\n\n💳 <code>${CARD_NUMBER}</code>\n\n⏱ <i>شما ۱۰ دقیقه فرصت دارید.</i>`;
+  await sendMessage(chat_id, factor, backAndSupportKeyboard());
 }
 
 // کیبورد خرید سرویس - کاملاً داینامیک، از جدول plans خوانده می‌شود
@@ -828,8 +903,11 @@ export default {
             const cUrow = await db.prepare("SELECT first_name, username FROM users WHERE user_id = ?").bind(state.target_user).first();
             const cUserLink = getUserLink(state.target_user, cUrow ? cUrow.first_name : "کاربر", cUrow ? cUrow.username : "");
             cancelledUserInfo = `\n\n👤 <b>کاربری که درخواستش لغو شد:</b> ${cUserLink}\n🆔 <b>آیدی:</b> <code>${state.target_user}</code>`;
+            const targetStateOnDomainCancel = await getState(db, state.target_user);
+            const refundedOnDomainCancel = await refundWalletIfPending(db, state.target_user, targetStateOnDomainCancel);
             await clearState(db, state.target_user);
-            await sendMessage(state.target_user, "❌ فرآیند صدور سرویس توسط پشتیبانی لغو شد. می‌توانید مجدداً درخواست دهید.", await mainMenu(db, state.target_user));
+            const refundNoteDomainCancel = refundedOnDomainCancel > 0 ? `\n\n💰 مبلغ ${refundedOnDomainCancel.toLocaleString('fa-IR')} تومانی که از کیف پول شما برای این سفارش کسر شده بود، به موجودی‌تان بازگردانده شد.` : "";
+            await sendMessage(state.target_user, `❌ فرآیند صدور سرویس توسط پشتیبانی لغو شد. می‌توانید مجدداً درخواست دهید.${refundNoteDomainCancel}`, await mainMenu(db, state.target_user));
           }
           await clearState(db, ADMIN_ID);
           const retryKb = state.target_user ? { inline_keyboard: [[{ text: "🔄 تلاش مجدد برای همین کاربر (ثبت ورکر جدید)", callback_data: `admretrydomain_${state.target_user}_${state.days}_${state.hours}_${state.action}_${state.user_type}` }]] } : null;
@@ -849,8 +927,10 @@ export default {
                      await callTelegram('editMessageCaption', { chat_id: ADMIN_ID, message_id: state.admin_message_id, caption: "❌ <b>این درخواست توسط کاربر لغو شد.</b>", parse_mode: "HTML" });
                  }
              }
+             const refundedOnCancel = await refundWalletIfPending(db, user_id, state);
              await clearState(db, user_id);
-             await sendMessage(chat_id, "✅ عملیات با موفقیت لغو شد و به منوی اصلی بازگشتید.", await mainMenu(db, user_id));
+             const refundNoteCancel = refundedOnCancel > 0 ? `\n\n💰 مبلغ ${refundedOnCancel.toLocaleString('fa-IR')} تومانی که از کیف پول شما برای این سفارش کسر شده بود، به موجودی‌تان بازگردانده شد.` : "";
+             await sendMessage(chat_id, `✅ عملیات با موفقیت لغو شد و به منوی اصلی بازگشتید.${refundNoteCancel}`, await mainMenu(db, user_id));
           } else if (!msg.photo) {
              await sendMessage(chat_id, "⏳ <b>شما یک درخواست در حال بررسی دارید!</b>\nمی‌توانید عکس فیش جدید را جهت ویرایش بفرستید یا دکمه «❌ لغو عملیات» را بزنید.", pendingMenu());
           }
@@ -859,10 +939,13 @@ export default {
 
         // 🟢 هندل سراسری دکمه‌های لغو برای تمام بخش‌ها (به جز PENDING کاربر که بالاتر هندل شد)
         if (text === "🔙 مرحله قبل" || text === "🏠 بازگشت به منوی اصلی" || text === "🔙 بازگشت به پنل کاربری" || text === "🔙 بازگشت به پنل مدیریت" || text === "❌ لغو عملیات") {
+          const refundedOnGlobalCancel = await refundWalletIfPending(db, user_id, state);
           await clearState(db, user_id);
           
           let menu;
-          let replyMsg = "🏠 عملیات فعلی لغو شد.";
+          let replyMsg = refundedOnGlobalCancel > 0
+            ? `🏠 عملیات فعلی لغو شد.\n\n💰 مبلغ ${refundedOnGlobalCancel.toLocaleString('fa-IR')} تومانی که از کیف پول شما برای این سفارش کسر شده بود، به موجودی‌تان بازگردانده شد.`
+            : "🏠 عملیات فعلی لغو شد.";
           
           if (user_id === ADMIN_ID) {
             // ادمین پنل خرید/منوی اصلی ندارد؛ همیشه به پنل حرفه‌ای مدیریت برمی‌گردد
@@ -1156,7 +1239,10 @@ export default {
           const lastSrv = await db.prepare("SELECT cf_domain FROM services WHERE user_id = ? ORDER BY id DESC LIMIT 1").bind(user_id).first();
           const workerText = lastSrv ? `🌐 <b>ورکر فعلی کاربر:</b> <code>${lastSrv.cf_domain}</code>\n` : `🌐 <b>ورکر فعلی کاربر:</b> ندارد (نیاز به ثبت ورکر جدید)\n`;
           
-          let caption = `🧾 <b>درخواست پرداخت جدید (ویرایش شده توسط کاربر)</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>\n📅 <b>زمان ویرایش:</b> ${getShamsiNow()}\n📦 پلن: ${planDaysLabel(state.days)} - ${state.type || 'سفارشی'}\n${workerText}`;
+          const walletInfoTextEdit = (state.wallet_used > 0)
+            ? `💰 مبلغ کسر شده از کیف پول: ${state.wallet_used.toLocaleString('fa-IR')} تومان\n💳 مبلغ واریزی کارت به کارت (رسید پیوست): ${(state.remaining_price != null ? state.remaining_price : state.price_paid || 0).toLocaleString('fa-IR')} تومان\n`
+            : "";
+          let caption = `🧾 <b>درخواست پرداخت جدید (ویرایش شده توسط کاربر)</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>\n📅 <b>زمان ویرایش:</b> ${getShamsiNow()}\n📦 پلن: ${planDaysLabel(state.days)} - ${state.type || 'سفارشی'}\n${walletInfoTextEdit}${workerText}`;
           const isSingle = (state.type && state.type.includes('یک کاربره')) ? '1' : '0';
 
           const admMarkup = { inline_keyboard: [
@@ -1279,7 +1365,8 @@ export default {
           let msg = `👤 <b>وضعیت من</b>\n\n`;
           msg += `📝 <b>نام ثبت شده:</b> ${escapeHtml(uRow && uRow.first_name ? uRow.first_name : first_name)}\n`;
           msg += `🆔 <b>آیدی عددی:</b> <code>${user_id}</code>\n`;
-          msg += `🌐 <b>یوزرنیم:</b> ${uRow && uRow.username ? '@' + uRow.username : (username ? '@' + username : 'ندارد')}\n\n`;
+          msg += `🌐 <b>یوزرنیم:</b> ${uRow && uRow.username ? '@' + uRow.username : (username ? '@' + username : 'ندارد')}\n`;
+          msg += `💰 <b>موجودی کیف پول:</b> ${((uRow && uRow.wallet_balance) || 0).toLocaleString('fa-IR')} تومان\n\n`;
           
           if (!srvList || srvList.length === 0) {
               msg += `❌ شما در حال حاضر هیچ سرویسی ندارید.`;
@@ -1316,6 +1403,32 @@ export default {
               msg += `🛡 <b>وضعیت حساب:</b> ${isBlocked ? '🛑 مسدود توسط ادمین' : '✅ فعال و متصل'}\n`;
           }
           await sendMessage(chat_id, msg);
+          return new Response('OK');
+        }
+
+        // ================= نمایش کیف پول و دکمه شارژ =================
+        if (text === "💰 کیف پول" && user_id !== ADMIN_ID) {
+          const balance = await getWalletBalance(db, user_id);
+          const walletMsg = `💰 <b>کیف پول شما</b>\n\n💵 موجودی فعلی: <b>${balance.toLocaleString('fa-IR')} تومان</b>\n\n📌 موجودی کیف پول به‌صورت خودکار هنگام خرید سرویس مصرف می‌شود؛ اگر کافی نباشد، فقط کافیست مابقی مبلغ را واریز کنید.\n\nبرای افزایش موجودی، روی دکمه زیر بزنید:`;
+          const walletKb = { inline_keyboard: [[{ text: "➕ شارژ کیف پول", callback_data: "wallet_charge" }]] };
+          await sendMessage(chat_id, walletMsg, walletKb);
+          return new Response('OK');
+        }
+
+        // مرحله دریافت مبلغ شارژ کیف پول از کاربر
+        if (state && state.step === 'WAIT_WALLET_AMOUNT' && user_id !== ADMIN_ID) {
+          const amount = parseInt(text.trim().replace(/[^\d]/g, ''));
+          if (!amount || isNaN(amount) || amount <= 0) {
+            await sendMessage(chat_id, "❌ لطفاً یک مبلغ معتبر (فقط عدد، به تومان) ارسال کنید. برای انصراف از دکمه «❌ لغو عملیات» استفاده کنید.", pendingMenu());
+            return new Response('OK');
+          }
+          state.step = 'WAIT_WALLET_RECEIPT';
+          state.charge_amount = amount;
+          state.timer_start = Date.now();
+          await setState(db, user_id, state);
+
+          const chargeMsg = `💳 <b>شارژ کیف پول به مبلغ ${amount.toLocaleString('fa-IR')} تومان</b>\n\nلطفاً مبلغ فوق را به شماره کارت زیر واریز کرده و <b>عکس رسید تراکنش</b> را همینجا ارسال کنید:\n\n💳 <code>${CARD_NUMBER}</code>\n\n⏱ <i>شما ۱۰ دقیقه فرصت دارید.</i>`;
+          await sendMessage(chat_id, chargeMsg, backAndSupportKeyboard());
           return new Response('OK');
         }
 
@@ -1402,13 +1515,6 @@ export default {
         if (user_id !== ADMIN_ID) {
           const referralCfgCheck = await getReferralConfig(db);
           if (referralCfgCheck.is_active && text === referralCfgCheck.button_text) {
-            // این قابلیت فقط برای کاربرانی که حداقل یک ورکر ثبت‌شده دارند فعال است
-            const hasWorkerForRef = await db.prepare("SELECT 1 FROM services WHERE user_id = ? AND cf_domain IS NOT NULL AND cf_domain != '' LIMIT 1").bind(user_id).first();
-            if (!hasWorkerForRef) {
-              await sendMessage(chat_id, "⚠️ برای استفاده از سیستم دعوت دوستان، ابتدا باید حداقل یک سرویس با ورکر ثبت‌شده داشته باشید.", await mainMenu(db, user_id));
-              return new Response('OK');
-            }
-
             // دریافت اطلاعات ربات برای ساخت لینک دعوت
             const botInfo = await callTelegram('getMe');
             let botUsername = "YOUR_BOT_USERNAME"; // نام کاربری پیش‌فرض در صورت خطا
@@ -1576,14 +1682,52 @@ export default {
           }
         }
 
-        if (msg.photo && state && state.step === 'WAIT_RECEIPT') {
+        // ================= دریافت عکس رسید شارژ کیف پول و ارسال برای تایید ادمین =================
+        if (msg.photo && state && state.step === 'WAIT_WALLET_RECEIPT' && user_id !== ADMIN_ID) {
           if (state.locked) return new Response('OK');
           state.locked = true;
           await setState(db, user_id, state);
 
           if (Date.now() - state.timer_start > 600000) {
             await clearState(db, user_id);
-            await sendMessage(user_id, "❌ زمان ۱۰ دقیقه‌ای شما برای پرداخت به پایان رسیده است. لطفاً فرآیند را مجدداً آغاز کنید.", await mainMenu(db, user_id));
+            await sendMessage(chat_id, "❌ زمان ۱۰ دقیقه‌ای شما برای پرداخت به پایان رسیده است. لطفاً فرآیند شارژ کیف پول را مجدداً آغاز کنید.", await mainMenu(db, user_id));
+            return new Response('OK');
+          }
+
+          const photoId = msg.photo[msg.photo.length - 1].file_id;
+          const amount = state.charge_amount;
+          const userLink = getUserLink(user_id, first_name, username);
+          const shamsiNow = getShamsiNow();
+
+          const insertRes = await db.prepare("INSERT INTO wallet_charges (user_id, amount, status, receipt_file_id, created_at_shamsi) VALUES (?, ?, 'PENDING', ?, ?)")
+              .bind(user_id, amount, photoId, shamsiNow).run();
+          const chargeId = insertRes.meta.last_row_id;
+
+          const caption = `💰 <b>درخواست شارژ کیف پول</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>\n📅 <b>زمان ثبت:</b> ${shamsiNow}\n💵 مبلغ درخواستی: <b>${amount.toLocaleString('fa-IR')} تومان</b>`;
+          const admKb = { inline_keyboard: [
+              [{ text: "✅ تایید و افزودن به موجودی", callback_data: `admwch_aprv_${chargeId}` }, { text: "❌ رد کردن", callback_data: `admwch_rej_${chargeId}` }]
+          ] };
+
+          const adminMsgRes = await callTelegram('sendPhoto', { chat_id: ADMIN_ID, photo: photoId, caption: caption, parse_mode: "HTML", reply_markup: admKb });
+          if (adminMsgRes && adminMsgRes.ok) {
+            await db.prepare("UPDATE wallet_charges SET admin_message_id = ? WHERE id = ?").bind(adminMsgRes.result.message_id, chargeId).run();
+          }
+
+          await clearState(db, user_id);
+          await sendMessage(chat_id, "✅ رسید شارژ کیف پول شما با موفقیت ارسال شد و در صف بررسی قرار گرفت. پس از تایید ادمین، مبلغ به موجودی شما اضافه خواهد شد.", await mainMenu(db, user_id));
+          return new Response('OK');
+        }
+
+        if (msg.photo && state && state.step === 'WAIT_RECEIPT') {
+          if (state.locked) return new Response('OK');
+          state.locked = true;
+          await setState(db, user_id, state);
+
+          if (Date.now() - state.timer_start > 600000) {
+            const refunded = await refundWalletIfPending(db, user_id, state);
+            await clearState(db, user_id);
+            const refundNote = refunded > 0 ? `\n\n💰 مبلغ ${refunded.toLocaleString('fa-IR')} تومانی که از کیف پول شما برای این سفارش کسر شده بود، به موجودی‌تان بازگردانده شد.` : "";
+            await sendMessage(user_id, `❌ زمان ۱۰ دقیقه‌ای شما برای پرداخت به پایان رسیده است. لطفاً فرآیند را مجدداً آغاز کنید.${refundNote}`, await mainMenu(db, user_id));
             return new Response('OK');
           }
 
@@ -1594,7 +1738,11 @@ export default {
           const lastSrv = await db.prepare("SELECT cf_domain FROM services WHERE user_id = ? ORDER BY id DESC LIMIT 1").bind(user_id).first();
           const workerText = lastSrv ? `🌐 <b>ورکر فعلی کاربر:</b> <code>${lastSrv.cf_domain}</code>\n` : `🌐 <b>ورکر فعلی کاربر:</b> ندارد (نیاز به ثبت ورکر جدید)\n`;
 
-          let caption = `🧾 <b>درخواست پرداخت جدید</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>\n📅 <b>زمان ثبت:</b> ${getShamsiNow()}\n📦 پلن: ${info.plan_label || planDaysLabel(info.days)} - ${info.type}\n💵 مبلغ: ${(info.price_paid || 0).toLocaleString('fa-IR')} تومان\n${workerText}`;
+          const walletInfoText = (info.wallet_used > 0)
+            ? `💰 مبلغ کسر شده از کیف پول: ${info.wallet_used.toLocaleString('fa-IR')} تومان\n💳 مبلغ واریزی کارت به کارت (رسید پیوست): ${(info.remaining_price != null ? info.remaining_price : info.price_paid).toLocaleString('fa-IR')} تومان\n`
+            : "";
+
+          let caption = `🧾 <b>درخواست پرداخت جدید</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>\n📅 <b>زمان ثبت:</b> ${getShamsiNow()}\n📦 پلن: ${info.plan_label || planDaysLabel(info.days)} - ${info.type}\n💵 مبلغ کل: ${(info.price_paid || 0).toLocaleString('fa-IR')} تومان\n${walletInfoText}${workerText}`;
           const isSingle = info.type.includes('یک کاربره') ? '1' : '0';
           
           const admMarkup = { inline_keyboard: [
@@ -2216,14 +2364,8 @@ export default {
 
           await db.prepare("UPDATE discounts SET used_count = used_count + 1 WHERE id = ?").bind(discount.id).run();
 
-          state.step = 'WAIT_RECEIPT';
-          state.timer_start = Date.now();
-          state.price_paid = finalPrice;
-          await setState(db, user_id, state);
-          
-          const factor = `🎉 <b>کد تخفیف ${discount.percent} درصدی اعمال شد!</b>\n\n💳 <b>فاکتور نهایی ${escapeHtml(plan.label)} (${state.type})</b>\n💵 قیمت اصلی: <s>${basePrice.toLocaleString('fa-IR')} تومان</s>\n🎁 مبلغ قابل پرداخت: <b>${finalPrice.toLocaleString('fa-IR')} تومان</b>\n\nلطفاً مبلغ فوق را واریز کرده و <b>عکس رسید تراکنش</b> را ارسال کنید:\n\n💳 <code>${CARD_NUMBER}</code>\n\n⏱ <i>شما ۱۰ دقیقه فرصت دارید.</i>`;
-          
-          await sendMessage(chat_id, factor, backAndSupportKeyboard());
+          await sendMessage(chat_id, `🎉 <b>کد تخفیف ${discount.percent} درصدی اعمال شد!</b>\n💵 قیمت اصلی: <s>${basePrice.toLocaleString('fa-IR')} تومان</s>\n🎁 مبلغ نهایی: <b>${finalPrice.toLocaleString('fa-IR')} تومان</b>`);
+          await proceedToPaymentStep(db, chat_id, user_id, state, plan, finalPrice, msg.from || {});
           return new Response('OK');
         }
 
@@ -2259,6 +2401,51 @@ export default {
             if (user_id !== ADMIN_ID) return new Response('OK');
             await callTelegram('deleteMessage', { chat_id, message_id: msg_id });
             return new Response('OK');
+        }
+
+        // ================= شروع فرآیند شارژ کیف پول =================
+        if (data === 'wallet_charge') {
+          if (user_id === ADMIN_ID) return new Response('OK');
+          await setState(db, user_id, { step: 'WAIT_WALLET_AMOUNT' });
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+          await sendMessage(chat_id, "💰 لطفاً مبلغی که می‌خواهید به کیف پول خود شارژ کنید را به تومان (فقط عدد) ارسال کنید:", pendingMenu());
+          return new Response('OK');
+        }
+
+        // ================= تایید/رد درخواست شارژ کیف پول توسط ادمین =================
+        if (data.startsWith('admwch_aprv_') || data.startsWith('admwch_rej_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const isApprove = data.startsWith('admwch_aprv_');
+          const chargeId = data.split('_')[2];
+
+          const charge = await db.prepare("SELECT * FROM wallet_charges WHERE id = ?").bind(chargeId).first();
+          if (!charge) {
+            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ این درخواست یافت نشد.", show_alert: true });
+            return new Response('OK');
+          }
+          if (charge.status !== 'PENDING') {
+            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "⚠️ قبلاً برای این درخواست تصمیم‌گیری شده است.", show_alert: true });
+            return new Response('OK');
+          }
+
+          const shamsiNow = getShamsiNow();
+          const uRow = await db.prepare("SELECT first_name, username FROM users WHERE user_id = ?").bind(charge.user_id).first();
+          const userLink = getUserLink(charge.user_id, uRow ? uRow.first_name : "کاربر", uRow ? uRow.username : "");
+
+          if (isApprove) {
+            await db.prepare("UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + ? WHERE user_id = ?").bind(charge.amount, charge.user_id).run();
+            await db.prepare("UPDATE wallet_charges SET status = 'APPROVED', decided_at_shamsi = ? WHERE id = ?").bind(shamsiNow, chargeId).run();
+            const newBalance = await getWalletBalance(db, charge.user_id);
+
+            await callTelegram('editMessageCaption', { chat_id, message_id: msg_id, caption: `✅ <b>تایید شد و به موجودی کاربر اضافه شد.</b>\n👤 کاربر: ${userLink}\n💵 مبلغ: ${charge.amount.toLocaleString('fa-IR')} تومان`, parse_mode: "HTML" });
+            await sendMessage(charge.user_id, `✅ <b>شارژ کیف پول شما تایید شد!</b>\n\n💵 مبلغ ${charge.amount.toLocaleString('fa-IR')} تومان به موجودی کیف پول شما اضافه شد.\n💰 موجودی فعلی: <b>${newBalance.toLocaleString('fa-IR')} تومان</b>`);
+          } else {
+            await db.prepare("UPDATE wallet_charges SET status = 'REJECTED', decided_at_shamsi = ? WHERE id = ?").bind(shamsiNow, chargeId).run();
+            await callTelegram('editMessageCaption', { chat_id, message_id: msg_id, caption: `❌ <b>این درخواست شارژ رد شد.</b>\n👤 کاربر: ${userLink}\n💵 مبلغ: ${charge.amount.toLocaleString('fa-IR')} تومان`, parse_mode: "HTML" });
+            await sendMessage(charge.user_id, `❌ متاسفانه درخواست شارژ کیف پول شما به مبلغ ${charge.amount.toLocaleString('fa-IR')} تومان توسط پشتیبانی رد شد. در صورت بروز مشکل با ادمین در ارتباط باشید.`);
+          }
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+          return new Response('OK');
         }
 
         // ================= تولید خودکار کد تخفیف از محل اعتبار دعوت دوستان =================
@@ -3044,15 +3231,9 @@ export default {
             return new Response('OK');
           }
 
-          state.step = 'WAIT_RECEIPT';
-          state.timer_start = Date.now();
           const planPrice = state.user_type === '1' ? (plan.price_single || 0) : (plan.price_multi || 0);
-          state.price_paid = planPrice;
-          await setState(db, user_id, state);
-
-          const factor = `💳 <b>فاکتور سرویس ${escapeHtml(plan.label)} (${state.type})</b>\n💵 مبلغ قابل پرداخت: <b>${planPrice.toLocaleString('fa-IR')} تومان</b>\n\nلطفاً مبلغ فوق را واریز کرده و <b>عکس رسید تراکنش</b> را همینجا ارسال کنید:\n\n💳 <code>${CARD_NUMBER}</code>\n\n⏱ <i>شما ۱۰ دقیقه فرصت دارید.</i>`;
           await callTelegram('deleteMessage', { chat_id, message_id: msg_id });
-          await sendMessage(chat_id, factor, backAndSupportKeyboard());
+          await proceedToPaymentStep(db, chat_id, user_id, state, plan, planPrice, call.from || {});
           return new Response('OK');
         }
 
@@ -3066,8 +3247,11 @@ export default {
           } else {
              await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: "❌ <b>توسط شما رد شد.</b>", parse_mode: "HTML" });
           }
+          const targetStateOnRej = await getState(db, targetUser);
+          const refundedOnRej = await refundWalletIfPending(db, targetUser, targetStateOnRej);
           await clearState(db, targetUser);
-          await sendMessage(targetUser, "❌ متاسفانه درخواست / رسید پرداختی شما توسط بخش پشتیبانی رد شد. در صورت بروز مشکل با ادمین در ارتباط باشید.", await mainMenu(db, targetUser));
+          const refundNoteRej = refundedOnRej > 0 ? `\n\n💰 مبلغ ${refundedOnRej.toLocaleString('fa-IR')} تومانی که از کیف پول شما برای این سفارش کسر شده بود، به موجودی‌تان بازگردانده شد.` : "";
+          await sendMessage(targetUser, `❌ متاسفانه درخواست / رسید پرداختی شما توسط بخش پشتیبانی رد شد. در صورت بروز مشکل با ادمین در ارتباط باشید.${refundNoteRej}`, await mainMenu(db, targetUser));
         }
 
         // ================= شروع مجدد سریع ثبت ورکر پس از لغو خودکار =================
