@@ -103,6 +103,34 @@ async function getFestivalConfig(db) {
   return await getSetting(db, 'festival_config', DEFAULT_FESTIVAL_CONFIG);
 }
 
+// ================= ویدیوهای آموزشی (V2ray / V2box) - قابل آپلود توسط ادمین از داخل ربات =================
+async function getTutorialVideo(db, type) {
+  return await getSetting(db, `tutorial_video_${type}`, { file_id: "" });
+}
+
+async function setTutorialVideo(db, type, fileId) {
+  await setSetting(db, `tutorial_video_${type}`, { file_id: fileId });
+}
+
+async function renderTutorialVideoMenu(db) {
+  const v2ray = await getTutorialVideo(db, 'v2ray');
+  const v2box = await getTutorialVideo(db, 'v2box');
+  const statusV2ray = v2ray.file_id ? "✅ آپلود شده" : "❌ هنوز آپلود نشده";
+  const statusV2box = v2box.file_id ? "✅ آپلود شده" : "❌ هنوز آپلود نشده";
+  const msg = `🎥 <b>مدیریت ویدیوهای آموزشی</b>\n\n` +
+    `از این بخش می‌توانید ویدیوی آموزش نصب V2ray و V2box را مستقیماً از همین‌جا آپلود یا فوروارد کنید؛ دیگر نیازی به وارد کردن آیدی فایل نیست.\n\n` +
+    `📌 وضعیت ویدیوی v2ray: <b>${statusV2ray}</b>\n` +
+    `📌 وضعیت ویدیوی v2box: <b>${statusV2box}</b>\n\n` +
+    `👇 برای آپلود یا جایگزینی هرکدام، روی دکمه مربوطه بزنید.`;
+  const kb = {
+    inline_keyboard: [
+      [{ text: "🚀 آپلود/تغییر ویدیوی آموزش v2ray", callback_data: "admtutvideo_v2ray" }],
+      [{ text: "📥 آپلود/تغییر ویدیوی آموزش v2box", callback_data: "admtutvideo_v2box" }]
+    ]
+  };
+  return { msg, kb };
+}
+
 // آیا امروز داخل بازه شروع/پایان جشنواره است؟ (تاریخ‌ها به فرمت شمسی رشته‌ای مقایسه می‌شوند)
 function isFestivalWindowOpen(cfg) {
   if (!cfg || !cfg.is_active) return false;
@@ -391,6 +419,7 @@ function settingsMenu() {
     keyboard: [
       [{ text: "🧩 مدیریت پلن‌های اشتراک" }, { text: "🎟 مدیریت کدهای تخفیف" }],
       [{ text: "🎁 مدیریت اکانت تست و جشنواره" }],
+      [{ text: "🎥 مدیریت ویدیوهای آموزشی" }],
       [{ text: "🗑 مدیریت و پاک‌سازی داده‌ها" }],
       [{ text: "🔙 بازگشت به پنل مدیریت" }]
     ],
@@ -561,7 +590,7 @@ function tutorialsMenu() {
 const FIXED_MENU_BUTTON_TEXTS = new Set([
   "🤝 دعوت دوستان (هدیه ۵ روزه)", "🎟 مدیریت کدهای تخفیف", "📊 گزارش فروش", "🎁 دریافت اکانت رایگان (تست)", "🛒 خرید سرویس", "📚 آموزش‌ها", "📦 سرویس‌های من", "👤 وضعیت من", "📞 ارتباط با پشتیبانی", "⚙️ ورود به پنل مدیریت حرفه‌ای",
   "👥 لیست کامل کاربران و خریدها", "🛠 مدیریت سرویس‌های کاربر", "📖 راهنمای پنل مدیریت", "🏠 بازگشت به منوی اصلی",
-  "📢 ارسال اطلاعیه", "⚙️ تنظیمات ربات", "🗑 مدیریت و پاک‌سازی داده‌ها", "🎁 مدیریت اکانت تست و جشنواره", "🔙 بازگشت به پنل مدیریت", "🧩 مدیریت پلن‌های اشتراک",
+  "📢 ارسال اطلاعیه", "⚙️ تنظیمات ربات", "🗑 مدیریت و پاک‌سازی داده‌ها", "🎁 مدیریت اکانت تست و جشنواره", "🔙 بازگشت به پنل مدیریت", "🧩 مدیریت پلن‌های اشتراک", "🎥 مدیریت ویدیوهای آموزشی",
   "⏳ صفر کردن زمان", "➕ تمدید / شارژ", "👥 تبدیل به چندکاربره", "👤 تبدیل به تک‌کاربره", "✅ وصل فوری", "🛑 قطع فوری", "✏️ ویرایش ورکر",
   "🔙 مرحله قبل", "🔙 بازگشت به پنل کاربری", "❌ لغو عملیات",
   "🚀 آموزش برنامه v2ray برای نصب کانفیگ", "📥 آموزش برنامه v2box برای نصب کانفیگ", "💬 راهنمای ارسال پیام به پشتیبانی"
@@ -1270,21 +1299,29 @@ export default {
           return new Response('OK');
         }
         if (text === "🚀 آموزش برنامه v2ray برای نصب کانفیگ") {
-          const v2rayFileId = "BAACAgQAAxkBAAEtRShqdE0hkPyjv56Zj5LVELpnsOIw3wACBx8AAlZvoVOrEkJnzs9sFT0E";
+          const tvV2ray = await getTutorialVideo(db, 'v2ray');
+          if (!tvV2ray.file_id) {
+            await sendMessage(chat_id, "⚠️ ویدیوی آموزشی V2ray هنوز توسط پشتیبانی آپلود نشده است. لطفاً بعداً دوباره تلاش کنید یا با پشتیبانی در ارتباط باشید.");
+            return new Response('OK');
+          }
           const res = await fetch(`https://api.telegram.org/bot${TOKEN}/sendVideo`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chat_id, video: v2rayFileId, caption: "🎥 آموزش نصب و راه‌اندازی کانفیگ در برنامه V2ray" })
+            body: JSON.stringify({ chat_id: chat_id, video: tvV2ray.file_id, caption: "🎥 آموزش نصب و راه‌اندازی کانفیگ در برنامه V2ray" })
           });
           if (!res.ok) await sendMessage(chat_id, "❌ ویدیوی آموزشی یافت نشد یا مشکلی در ارسال وجود دارد. لطفاً به پشتیبانی اطلاع دهید.");
           return new Response('OK');
         }
         if (text === "📥 آموزش برنامه v2box برای نصب کانفیگ") {
-          const v2boxFileId = "BAACAgQAAxkBAAEtRSZqdE0EhRYV4w4BZ6w7AAFUDw7Q2ikAAgYfAAJWb6FTbVW_8ce4y249BA";
+          const tvV2box = await getTutorialVideo(db, 'v2box');
+          if (!tvV2box.file_id) {
+            await sendMessage(chat_id, "⚠️ ویدیوی آموزشی V2box هنوز توسط پشتیبانی آپلود نشده است. لطفاً بعداً دوباره تلاش کنید یا با پشتیبانی در ارتباط باشید.");
+            return new Response('OK');
+          }
           const res = await fetch(`https://api.telegram.org/bot${TOKEN}/sendVideo`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chat_id, video: v2boxFileId, caption: "🎥 آموزش نصب و راه‌اندازی کانفیگ در برنامه V2box" })
+            body: JSON.stringify({ chat_id: chat_id, video: tvV2box.file_id, caption: "🎥 آموزش نصب و راه‌اندازی کانفیگ در برنامه V2box" })
           });
           if (!res.ok) await sendMessage(chat_id, "❌ ویدیوی آموزشی یافت نشد یا مشکلی در ارسال وجود دارد. لطفاً به پشتیبانی اطلاع دهید.");
           return new Response('OK');
@@ -1666,6 +1703,28 @@ export default {
         // ================= تنظیمات ربات =================
         if (text === "⚙️ تنظیمات ربات" && user_id === ADMIN_ID) {
           await sendMessage(chat_id, "⚙️ <b>تنظیمات ربات</b>\n\nاز گزینه‌های زیر استفاده کنید:", settingsMenu());
+          return new Response('OK');
+        }
+
+        // ================= مدیریت ویدیوهای آموزشی =================
+        if (text === "🎥 مدیریت ویدیوهای آموزشی" && user_id === ADMIN_ID) {
+          await clearState(db, ADMIN_ID);
+          const { msg: tvMsg, kb: tvKb } = await renderTutorialVideoMenu(db);
+          await sendMessage(chat_id, tvMsg, tvKb);
+          return new Response('OK');
+        }
+
+        // دریافت ویدیوی آموزشی از ادمین (آپلود مستقیم یا فوروارد) پس از زدن دکمه مربوطه
+        if (user_id === ADMIN_ID && state && state.step === 'WAIT_TUTORIAL_VIDEO') {
+          const vType = state.video_type;
+          const label = vType === 'v2ray' ? 'V2ray' : 'V2box';
+          if (msg.video) {
+            await setTutorialVideo(db, vType, msg.video.file_id);
+            await clearState(db, ADMIN_ID);
+            await sendMessage(chat_id, `✅ ویدیوی آموزش <b>${label}</b> با موفقیت ذخیره شد و از این پس هنگام درخواست کاربران برای این کاربران ارسال خواهد شد.`, settingsMenu());
+          } else {
+            await sendMessage(chat_id, `⚠️ لطفاً یک <b>فایل ویدیویی</b> (آپلود مستقیم یا فوروارد شده از هر چتی) برای آموزش <b>${label}</b> ارسال کنید.\n\nبرای انصراف، دکمه «❌ لغو عملیات» را بزنید.`, pendingMenu());
+          }
           return new Response('OK');
         }
 
@@ -2431,6 +2490,20 @@ export default {
           const { msg, kb } = await renderFestivalConfigMessage(db);
           await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
           await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: msg, reply_markup: kb, parse_mode: "HTML" });
+          return new Response('OK');
+        }
+
+        if (data === 'admtutvideo_v2ray' || data === 'admtutvideo_v2box') {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const vType = data === 'admtutvideo_v2ray' ? 'v2ray' : 'v2box';
+          const label = vType === 'v2ray' ? 'V2ray' : 'V2box';
+          await setState(db, ADMIN_ID, { step: 'WAIT_TUTORIAL_VIDEO', video_type: vType });
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+          await sendMessage(
+            chat_id,
+            `🎬 لطفاً ویدیوی آموزش <b>${label}</b> را همین‌جا <b>آپلود</b> کنید یا از یک چت دیگر <b>فوروارد</b> نمایید.\n\n⌨️ در صورت انصراف، دکمه «❌ لغو عملیات» را بزنید.`,
+            pendingMenu()
+          );
           return new Response('OK');
         }
 
