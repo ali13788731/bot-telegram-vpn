@@ -103,6 +103,51 @@ async function getFestivalConfig(db) {
   return await getSetting(db, 'festival_config', DEFAULT_FESTIVAL_CONFIG);
 }
 
+// ================= تنظیمات پویا (دعوت دوستان و تولید خودکار کد تخفیف) =================
+// متن پیام می‌تواند شامل {percent} (درصد تخفیف) و {link} (لینک اختصاصی دعوت) باشد.
+const DEFAULT_REFERRAL_CONFIG = {
+  is_active: 1,
+  discount_percent: 20,
+  validity_days: 30,
+  button_text: "🤝 دعوت دوستان",
+  message_text: "🎁 <b>سیستم دعوت دوستان</b>\n\nبه ازای دعوت هر دوست که وارد ربات شود، یک <b>کد تخفیف {percent}٪</b> به شمارشگر کدهای شما اضافه می‌شود. هر کد فقط یک‌بار قابل استفاده است.\n\n🔗 <b>لینک اختصاصی دعوت شما:</b>\n<code>{link}</code>\n\nهمین الان این لینک را برای دوستانتان ارسال کنید! 🚀"
+};
+
+async function getReferralConfig(db) {
+  return await getSetting(db, 'referral_config', DEFAULT_REFERRAL_CONFIG);
+}
+
+function renderReferralMessageText(cfg, refLink) {
+  return String(cfg.message_text || DEFAULT_REFERRAL_CONFIG.message_text)
+    .replaceAll('{percent}', String(cfg.discount_percent))
+    .replaceAll('{link}', refLink);
+}
+
+// تاریخ (به همان قالب getShamsiNow) پس از N روز از امروز - برای تعیین انقضای کدهای تخفیفِ رفرال
+function getShamsiDatePlusDays(days) {
+  const d = new Date();
+  d.setDate(d.getDate() + Number(days || 0));
+  const option = { timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit' };
+  return new Intl.DateTimeFormat('fa-IR', option).format(d);
+}
+
+// تولید یک کد تخفیف تصادفیِ یکتا برای سیستم دعوت دوستان و ثبت آن در جدول discounts
+async function generateReferralDiscountCode(db, userId, cfg) {
+  const expireDate = getShamsiDatePlusDays(cfg.validity_days);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const rand = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const code = `REF${userId}${rand}`;
+    try {
+      await db.prepare("INSERT INTO discounts (code, percent, max_uses, expire_date_shamsi, generated_by) VALUES (?, ?, 1, ?, ?)")
+        .bind(code, cfg.discount_percent, expireDate, userId).run();
+      return code;
+    } catch (e) {
+      // برخورد کد تصادفی (بسیار نامحتمل) - تلاش دوباره با کد جدید
+    }
+  }
+  return null;
+}
+
 // ================= ویدیوهای آموزشی (V2ray / V2box) - قابل آپلود توسط ادمین از داخل ربات =================
 async function getTutorialVideo(db, type) {
   return await getSetting(db, `tutorial_video_${type}`, { file_id: "" });
@@ -374,6 +419,7 @@ async function mainMenu(db, user_id) {
   const hasWorker = await db.prepare("SELECT 1 FROM services WHERE user_id = ? AND cf_domain IS NOT NULL AND cf_domain != '' LIMIT 1").bind(user_id).first();
   const trialCfg = await getTrialConfig(db);
   const festivalCfg = await getFestivalConfig(db);
+  const referralCfg = await getReferralConfig(db);
 
   const keyboard = [];
 
@@ -394,8 +440,8 @@ async function mainMenu(db, user_id) {
 
   keyboard.push([{ text: "📚 آموزش‌ها" }]);
 
-  if (hasWorker) {
-    keyboard.push([{ text: "🤝 دعوت دوستان (هدیه ۵ روزه)" }]);
+  if (referralCfg.is_active && hasWorker) {
+    keyboard.push([{ text: referralCfg.button_text }]);
   }
   keyboard.push([{ text: "📞 ارتباط با پشتیبانی" }]);
   return { keyboard, resize_keyboard: true };
@@ -418,7 +464,7 @@ function settingsMenu() {
   return {
     keyboard: [
       [{ text: "🧩 مدیریت پلن‌های اشتراک" }, { text: "🎟 مدیریت کدهای تخفیف" }],
-      [{ text: "🎁 مدیریت اکانت تست و جشنواره" }],
+      [{ text: "🎁 مدیریت اکانت تست و جشنواره" }, { text: "🤝 مدیریت سیستم دعوت دوستان" }],
       [{ text: "🎥 مدیریت ویدیوهای آموزشی" }],
       [{ text: "🗑 مدیریت و پاک‌سازی داده‌ها" }],
       [{ text: "🔙 بازگشت به پنل مدیریت" }]
@@ -472,6 +518,25 @@ async function renderFestivalConfigMessage(db) {
     [{ text: "🗓 تغییر مدت اعتبار (روز)", callback_data: "admfestival_edit_days" }],
     [{ text: "📅 تنظیم تاریخ شروع", callback_data: "admfestival_edit_start_date" }, { text: "📅 تنظیم تاریخ پایان", callback_data: "admfestival_edit_end_date" }],
     [{ text: isSingle ? "👥 تغییر به چندکاربره" : "👤 تغییر به تک‌کاربره", callback_data: "admfestival_toggle_single" }, { text: "🔙 بازگشت", callback_data: "admtrialfestival_menu" }]
+  ] };
+  return { msg, kb };
+}
+
+async function renderReferralConfigMessage(db) {
+  const cfg = await getReferralConfig(db);
+  const msg = `🤝 <b>تنظیمات سیستم دعوت دوستان</b>\n\n` +
+    `🔘 وضعیت: ${cfg.is_active ? '✅ فعال' : '🚫 غیرفعال'}\n` +
+    `✏️ متن دکمه: ${escapeHtml(cfg.button_text)}\n` +
+    `📉 درصد تخفیف هر کد: <b>${cfg.discount_percent}٪</b>\n` +
+    `⏳ اعتبار کد تولیدشده: <b>${cfg.validity_days}</b> روز\n` +
+    `📝 متن پیام معرفی:\n<code>${escapeHtml(cfg.message_text)}</code>\n\n` +
+    `ℹ️ در متن پیام می‌توانید از <code>{percent}</code> (درصد تخفیف) و <code>{link}</code> (لینک اختصاصی دعوت) استفاده کنید.`;
+  const kb = { inline_keyboard: [
+    [{ text: cfg.is_active ? "🚫 غیرفعال کردن سیستم دعوت" : "✅ فعال کردن سیستم دعوت", callback_data: "admreferral_toggle" }],
+    [{ text: "✏️ تغییر متن دکمه", callback_data: "admreferral_edit_button_text" }],
+    [{ text: "📝 تغییر متن پیام معرفی", callback_data: "admreferral_edit_message_text" }],
+    [{ text: "📉 تغییر درصد تخفیف", callback_data: "admreferral_edit_discount_percent" }],
+    [{ text: "⏳ تغییر اعتبار کد (روز)", callback_data: "admreferral_edit_validity_days" }]
   ] };
   return { msg, kb };
 }
@@ -588,9 +653,9 @@ function tutorialsMenu() {
 // ================= مجموعه متن تمام دکمه‌های ثابت (کیبورد پایین صفحه) =================
 // برای تشخیص این‌که آیا متن ارسالی توسط ادمین «فشردن یک دکمه منو» است یا «ورودی واقعی» (مثل آدرس ورکر)
 const FIXED_MENU_BUTTON_TEXTS = new Set([
-  "🤝 دعوت دوستان (هدیه ۵ روزه)", "🎟 مدیریت کدهای تخفیف", "📊 گزارش فروش", "🎁 دریافت اکانت رایگان (تست)", "🛒 خرید سرویس", "📚 آموزش‌ها", "📦 سرویس‌های من", "👤 وضعیت من", "📞 ارتباط با پشتیبانی", "⚙️ ورود به پنل مدیریت حرفه‌ای",
+  "🎟 مدیریت کدهای تخفیف", "📊 گزارش فروش", "🎁 دریافت اکانت رایگان (تست)", "🛒 خرید سرویس", "📚 آموزش‌ها", "📦 سرویس‌های من", "👤 وضعیت من", "📞 ارتباط با پشتیبانی", "⚙️ ورود به پنل مدیریت حرفه‌ای",
   "👥 لیست کامل کاربران و خریدها", "🛠 مدیریت سرویس‌های کاربر", "📖 راهنمای پنل مدیریت", "🏠 بازگشت به منوی اصلی",
-  "📢 ارسال اطلاعیه", "⚙️ تنظیمات ربات", "🗑 مدیریت و پاک‌سازی داده‌ها", "🎁 مدیریت اکانت تست و جشنواره", "🔙 بازگشت به پنل مدیریت", "🧩 مدیریت پلن‌های اشتراک", "🎥 مدیریت ویدیوهای آموزشی",
+  "📢 ارسال اطلاعیه", "⚙️ تنظیمات ربات", "🗑 مدیریت و پاک‌سازی داده‌ها", "🎁 مدیریت اکانت تست و جشنواره", "🤝 مدیریت سیستم دعوت دوستان", "🔙 بازگشت به پنل مدیریت", "🧩 مدیریت پلن‌های اشتراک", "🎥 مدیریت ویدیوهای آموزشی",
   "⏳ صفر کردن زمان", "➕ تمدید / شارژ", "👥 تبدیل به چندکاربره", "👤 تبدیل به تک‌کاربره", "✅ وصل فوری", "🛑 قطع فوری", "✏️ ویرایش ورکر",
   "🔙 مرحله قبل", "🔙 بازگشت به پنل کاربری", "❌ لغو عملیات",
   "🚀 آموزش برنامه v2ray برای نصب کانفیگ", "📥 آموزش برنامه v2box برای نصب کانفیگ", "💬 راهنمای ارسال پیام به پشتیبانی"
@@ -730,21 +795,14 @@ export default {
               try {
                 // ثبت در دیتابیس رفرال
                 await db.prepare("INSERT INTO referrals (referrer_id, referred_id) VALUES (?, ?)").bind(referrerId, user_id).run();
-                
-                // پیدا کردن آخرین سرویس فعال شخص دعوت‌کننده
-                const refActiveSrv = await db.prepare("SELECT * FROM services WHERE user_id = ? AND status = 'ACTIVE' ORDER BY id DESC LIMIT 1").bind(referrerId).first();
-                
-                if (refActiveSrv) {
-                  // اضافه کردن 5 روز به سرویس دعوت کننده
-                  const cfRes = await updateCloudflareExp(refActiveSrv.cf_domain, 5, 0, refActiveSrv.plan_type.includes('یک کاربره'), referrerId, db);
-                  if (cfRes.success) {
-                    await db.prepare("UPDATE services SET exp_date = ? WHERE id = ?").bind(cfRes.newExpDate, refActiveSrv.id).run();
-                    await db.prepare("UPDATE referrals SET gift_applied = 1, gift_days = 5 WHERE referrer_id = ? AND referred_id = ?").bind(referrerId, user_id).run();
-                    const newInviteeName = escapeHtml(first_name);
-                    await sendMessage(referrerId, `🎉 <b>مژده!</b>\n\nکاربر ${newInviteeName} با لینک دعوت شما وارد ربات شد.\n🎁 <b>۵ روز هدیه</b> به اعتبار سرویس شما (شناسه #${refActiveSrv.id}) اضافه شد!\n\nبرای دیدن لیست کامل افرادی که دعوت کرده‌اید، وارد بخش «🤝 دعوت دوستان» شوید.`);
-                  }
-                } else {
-                  await sendMessage(referrerId, `🎉 <b>مژده!</b>\n\nیک کاربر جدید با لینک دعوت شما عضو شد.\n⚠️ <i>توجه: از آنجایی که شما در حال حاضر سرویس فعالی ندارید، امکان اضافه کردن هدیه ۵ روزه به سرویس شما وجود نداشت. (هدیه فقط روی سرویس‌های فعال اعمال می‌شود).</i>`);
+
+                // اعطای یک واحد اعتبار کد تخفیف به دعوت‌کننده (فقط اگر سیستم دعوت دوستان توسط ادمین فعال باشد)
+                const referralCfgOnJoin = await getReferralConfig(db);
+                if (referralCfgOnJoin.is_active) {
+                  await db.prepare("UPDATE users SET referral_credits = COALESCE(referral_credits, 0) + 1 WHERE user_id = ?").bind(referrerId).run();
+                  await db.prepare("UPDATE referrals SET credit_awarded = 1 WHERE referrer_id = ? AND referred_id = ?").bind(referrerId, user_id).run();
+                  const newInviteeName = escapeHtml(first_name);
+                  await sendMessage(referrerId, `🎉 <b>مژده!</b>\n\nکاربر ${newInviteeName} با لینک دعوت شما وارد ربات شد.\n🎟 یک <b>کد تخفیف ${referralCfgOnJoin.discount_percent}٪</b> به شمارشگر شما اضافه شد!\n\nبرای تولید و دریافت کد، وارد بخش «${referralCfgOnJoin.button_text}» شوید.`);
                 }
               } catch (err) { console.log("Referral Error: ", err); }
             }
@@ -981,6 +1039,8 @@ export default {
           const userLink = getUserLink(targetUid, uRow.first_name, uRow.username);
           const refCountRow = await db.prepare("SELECT COUNT(*) as cnt FROM referrals WHERE referrer_id = ?").bind(targetUid).first();
           const referralCount = refCountRow ? refCountRow.cnt : 0;
+          const refCreditsRow = await db.prepare("SELECT referral_credits FROM users WHERE user_id = ?").bind(targetUid).first();
+          const referralCredits = (refCreditsRow && refCreditsRow.referral_credits) || 0;
           
           const workerData = await getWorkerStatus(targetSrv.cf_domain);
           const isKsActive = workerData.killSwitch === true;
@@ -1006,7 +1066,8 @@ export default {
           mainMsg += `🆔 آیدی: <code>${targetUid}</code>\n`;
           mainMsg += `تعداد سرویس‌ها: ${srvList.length}\n`;
 
-          mainMsg += `🤝 تعداد دعوت‌شدگان: ${referralCount} نفر\n\n`;
+          mainMsg += `🤝 تعداد دعوت‌شدگان: ${referralCount} نفر\n`;
+          mainMsg += `🎟 کدهای تخفیف در دسترس (رفرال): ${referralCredits} عدد\n\n`;
           
           mainMsg += `🌐 <b>آدرس ورکر:</b>\n<code>${pureWorkerUrl}/</code>\n\n`;
           mainMsg += `📊 <b>لینک پنل معمولی:</b>\n<code>${pureWorkerUrl}/login</code>\n\n`;
@@ -1337,63 +1398,70 @@ export default {
         }
 		
 		
-		// ================= دریافت لینک معرفی دوستان =================
-        if (text === "🤝 دعوت دوستان (هدیه ۵ روزه)" && user_id !== ADMIN_ID) {
-          // این قابلیت فقط برای کاربرانی که حداقل یک ورکر ثبت‌شده دارند فعال است
-          const hasWorkerForRef = await db.prepare("SELECT 1 FROM services WHERE user_id = ? AND cf_domain IS NOT NULL AND cf_domain != '' LIMIT 1").bind(user_id).first();
-          if (!hasWorkerForRef) {
-            await sendMessage(chat_id, "⚠️ برای استفاده از سیستم دعوت دوستان، ابتدا باید حداقل یک سرویس با ورکر ثبت‌شده داشته باشید.", await mainMenu(db, user_id));
-            return new Response('OK');
-          }
-
-          // دریافت اطلاعات ربات برای ساخت لینک دعوت
-          const botInfo = await callTelegram('getMe');
-          let botUsername = "YOUR_BOT_USERNAME"; // نام کاربری پیش‌فرض در صورت خطا
-          if (botInfo && botInfo.ok) {
-             botUsername = botInfo.result.username;
-          }
-          
-          const refLink = `https://t.me/${botUsername}?start=${user_id}`;
-          
-          const msg = `🎁 <b>سیستم معرفی دوستان (کسب هدیه)</b>\n\nبا دعوت از دوستان خود به این ربات، به ازای هر نفری که عضو شود، <b>۵ روز سرویس رایگان</b> هدیه بگیرید!\n\n📌 <b>قوانین:</b>\n۱. شخصی که دعوت می‌کنید نباید قبلاً عضو ربات بوده باشد.\n۲. هدیه ۵ روزه به صورت خودکار به <b>آخرین سرویس فعال شما</b> اضافه می‌شود.\n۳. محدودیتی در تعداد دعوت‌ها وجود ندارد!\n\n🔗 <b>لینک اختصاصی دعوت شما:</b>\n<code>${refLink}</code>\n\nهمین الان این پیام را برای دوستانتان فوروارد کنید! 🚀`;
-          
-          await sendMessage(chat_id, msg);
-
-          // ================= نمایش لیست افرادی که این کاربر دعوت کرده =================
-          const { results: myInvitees } = await db.prepare(`
-            SELECT r.referred_id, r.created_at, r.gift_applied, u.first_name, u.username
-            FROM referrals r
-            LEFT JOIN users u ON r.referred_id = u.user_id
-            WHERE r.referrer_id = ?
-            ORDER BY r.id DESC
-          `).bind(user_id).all();
-
-          if (!myInvitees || myInvitees.length === 0) {
-            await sendMessage(chat_id, `👥 <b>لیست دعوت‌شدگان شما</b>\n\nشما تاکنون هیچ کاربری را با لینک خود دعوت نکرده‌اید.`);
-          } else {
-            const appliedCount = myInvitees.filter(i => i.gift_applied === 1).length;
-            const totalGiftDays = appliedCount * 5;
-
-            let inviteesMsg = `👥 <b>لیست دعوت‌شدگان شما</b>\n\n`;
-            inviteesMsg += `📊 <b>تعداد کل دعوت‌ها:</b> ${myInvitees.length} نفر\n`;
-            inviteesMsg += `🎁 <b>مجموع روزهای هدیه دریافتی:</b> ${totalGiftDays} روز\n\n`;
-
-            const showList = myInvitees.slice(0, 30);
-            showList.forEach((inv, idx) => {
-              const displayName = escapeHtml(inv.first_name || 'کاربر');
-              const usernamePart = inv.username ? ` (@${inv.username})` : '';
-              const giftStatus = inv.gift_applied === 1 ? '🎁 هدیه اعمال شد' : '⏳ هدیه اعمال نشد';
-              inviteesMsg += `${idx + 1}. ${displayName}${usernamePart} — ${giftStatus}\n`;
-            });
-
-            if (myInvitees.length > showList.length) {
-              inviteesMsg += `\n... و ${myInvitees.length - showList.length} نفر دیگر`;
+		// ================= دریافت لینک معرفی دوستان و شمارشگر کدهای تخفیف =================
+        if (user_id !== ADMIN_ID) {
+          const referralCfgCheck = await getReferralConfig(db);
+          if (referralCfgCheck.is_active && text === referralCfgCheck.button_text) {
+            // این قابلیت فقط برای کاربرانی که حداقل یک ورکر ثبت‌شده دارند فعال است
+            const hasWorkerForRef = await db.prepare("SELECT 1 FROM services WHERE user_id = ? AND cf_domain IS NOT NULL AND cf_domain != '' LIMIT 1").bind(user_id).first();
+            if (!hasWorkerForRef) {
+              await sendMessage(chat_id, "⚠️ برای استفاده از سیستم دعوت دوستان، ابتدا باید حداقل یک سرویس با ورکر ثبت‌شده داشته باشید.", await mainMenu(db, user_id));
+              return new Response('OK');
             }
 
-            await sendMessage(chat_id, inviteesMsg);
+            // دریافت اطلاعات ربات برای ساخت لینک دعوت
+            const botInfo = await callTelegram('getMe');
+            let botUsername = "YOUR_BOT_USERNAME"; // نام کاربری پیش‌فرض در صورت خطا
+            if (botInfo && botInfo.ok) {
+               botUsername = botInfo.result.username;
+            }
+
+            const refLink = `https://t.me/${botUsername}?start=${user_id}`;
+            const msg = renderReferralMessageText(referralCfgCheck, refLink);
+            await sendMessage(chat_id, msg);
+
+            // ================= شمارشگر کدهای تخفیف در دسترس + دکمه تولید کد =================
+            const uRowForCredits = await db.prepare("SELECT referral_credits FROM users WHERE user_id = ?").bind(user_id).first();
+            const availableCredits = (uRowForCredits && uRowForCredits.referral_credits) || 0;
+            const creditsMsg = `🎟 شما در حال حاضر <b>${availableCredits}</b> عدد کد تخفیف در دسترس دارید.`;
+            const creditsKb = availableCredits > 0 ? { inline_keyboard: [[{ text: "🎁 تولید کد تخفیف", callback_data: "refgen_code" }]] } : undefined;
+            await sendMessage(chat_id, creditsMsg, creditsKb);
+
+            // ================= نمایش لیست افرادی که این کاربر دعوت کرده =================
+            const { results: myInvitees } = await db.prepare(`
+              SELECT r.referred_id, r.created_at, r.credit_awarded, u.first_name, u.username
+              FROM referrals r
+              LEFT JOIN users u ON r.referred_id = u.user_id
+              WHERE r.referrer_id = ?
+              ORDER BY r.id DESC
+            `).bind(user_id).all();
+
+            if (!myInvitees || myInvitees.length === 0) {
+              await sendMessage(chat_id, `👥 <b>لیست دعوت‌شدگان شما</b>\n\nشما تاکنون هیچ کاربری را با لینک خود دعوت نکرده‌اید.`);
+            } else {
+              const appliedCount = myInvitees.filter(i => i.credit_awarded === 1).length;
+
+              let inviteesMsg = `👥 <b>لیست دعوت‌شدگان شما</b>\n\n`;
+              inviteesMsg += `📊 <b>تعداد کل دعوت‌ها:</b> ${myInvitees.length} نفر\n`;
+              inviteesMsg += `🎟 <b>تعداد کدهای تخفیف کسب‌شده:</b> ${appliedCount} عدد\n\n`;
+
+              const showList = myInvitees.slice(0, 30);
+              showList.forEach((inv, idx) => {
+                const displayName = escapeHtml(inv.first_name || 'کاربر');
+                const usernamePart = inv.username ? ` (@${inv.username})` : '';
+                const giftStatus = inv.credit_awarded === 1 ? '🎟 کد تخفیف اعطا شد' : '⏳ اعطا نشد';
+                inviteesMsg += `${idx + 1}. ${displayName}${usernamePart} — ${giftStatus}\n`;
+              });
+
+              if (myInvitees.length > showList.length) {
+                inviteesMsg += `\n... و ${myInvitees.length - showList.length} نفر دیگر`;
+              }
+
+              await sendMessage(chat_id, inviteesMsg);
+            }
+            return new Response('OK');
           }
-          return new Response('OK');
-        }		
+        }
 		
 
         if (text === "🛒 خرید سرویس" && user_id !== ADMIN_ID) {
@@ -1833,7 +1901,8 @@ export default {
             msg += "هیچ کد تخفیفی ثبت نشده است.\n";
           } else {
             discounts.forEach(d => {
-              msg += `🏷 <b>کد:</b> <code>${d.code}</code>\n📉 درصد: ${d.percent}%\n👥 استفاده شده: ${d.used_count} از ${d.max_uses}\n⏳ انقضا: ${d.expire_date_shamsi}\n➖➖➖➖\n`;
+              const sourceTag = d.generated_by ? `\n🤝 منبع: کد رفرالِ کاربر <code>${d.generated_by}</code>` : '';
+              msg += `🏷 <b>کد:</b> <code>${d.code}</code>\n📉 درصد: ${d.percent}%\n👥 استفاده شده: ${d.used_count} از ${d.max_uses}\n⏳ انقضا: ${d.expire_date_shamsi}${sourceTag}\n➖➖➖➖\n`;
             });
           }
           
@@ -1882,6 +1951,55 @@ export default {
         if (text === "🎁 مدیریت اکانت تست و جشنواره" && user_id === ADMIN_ID) {
           await clearState(db, ADMIN_ID);
           await sendMessage(chat_id, "🎁 <b>مدیریت اکانت تست و جشنواره</b>\n\nکدام بخش را می‌خواهید مدیریت کنید؟", trialFestivalMenu());
+          return new Response('OK');
+        }
+
+        // ================= مدیریت سیستم دعوت دوستان =================
+        if (text === "🤝 مدیریت سیستم دعوت دوستان" && user_id === ADMIN_ID) {
+          await clearState(db, ADMIN_ID);
+          const { msg, kb } = await renderReferralConfigMessage(db);
+          await sendMessage(chat_id, msg, kb);
+          return new Response('OK');
+        }
+
+        // دریافت مقدار جدید یکی از فیلدهای تنظیمات سیستم دعوت دوستان
+        if (user_id === ADMIN_ID && state && state.step === 'WAIT_REFERRAL_EDIT_VALUE') {
+          const field = state.field;
+          const cfg = await getReferralConfig(db);
+          if (field === 'button_text') {
+            const val = text.trim();
+            if (!val) {
+              await sendMessage(ADMIN_ID, `❌ متن دکمه نمی‌تواند خالی باشد.\n\n📌 مقدار فعلی: ${escapeHtml(cfg.button_text)}\n\nلطفاً دوباره ارسال کنید:`, pendingMenu());
+              return new Response('OK');
+            }
+            cfg.button_text = val;
+          } else if (field === 'message_text') {
+            const val = text.trim();
+            if (!val) {
+              await sendMessage(ADMIN_ID, `❌ متن پیام نمی‌تواند خالی باشد.\n\nلطفاً دوباره ارسال کنید:`, pendingMenu());
+              return new Response('OK');
+            }
+            cfg.message_text = val;
+          } else if (field === 'discount_percent') {
+            const n = parseInt(text.trim());
+            if (isNaN(n) || n <= 0 || n > 100) {
+              await sendMessage(ADMIN_ID, `❌ درصد تخفیف باید عددی بین ۱ تا ۱۰۰ باشد.\n\n📌 مقدار فعلی: ${cfg.discount_percent}٪\n\nلطفاً دوباره ارسال کنید:`, pendingMenu());
+              return new Response('OK');
+            }
+            cfg.discount_percent = n;
+          } else if (field === 'validity_days') {
+            const n = parseInt(text.trim());
+            if (isNaN(n) || n <= 0) {
+              await sendMessage(ADMIN_ID, `❌ لطفاً یک عدد معتبر (بزرگ‌تر از صفر) وارد کنید.\n\n📌 مقدار فعلی: ${cfg.validity_days} روز`, pendingMenu());
+              return new Response('OK');
+            }
+            cfg.validity_days = n;
+          }
+          await setSetting(db, 'referral_config', cfg);
+          await clearState(db, ADMIN_ID);
+          await sendMessage(ADMIN_ID, "✅ تنظیمات سیستم دعوت دوستان به‌روزرسانی شد.");
+          const { msg, kb } = await renderReferralConfigMessage(db);
+          await sendMessage(ADMIN_ID, msg, kb);
           return new Response('OK');
         }
 
@@ -2143,6 +2261,48 @@ export default {
             return new Response('OK');
         }
 
+        // ================= تولید خودکار کد تخفیف از محل اعتبار دعوت دوستان =================
+        if (data === 'refgen_code') {
+          if (user_id === ADMIN_ID) return new Response('OK');
+          const referralCfgGen = await getReferralConfig(db);
+          if (!referralCfgGen.is_active) {
+            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "⚠️ سیستم دعوت دوستان در حال حاضر غیرفعال است.", show_alert: true });
+            return new Response('OK');
+          }
+          const uRowGen = await db.prepare("SELECT referral_credits FROM users WHERE user_id = ?").bind(user_id).first();
+          const credits = (uRowGen && uRowGen.referral_credits) || 0;
+          if (credits <= 0) {
+            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ شما کد تخفیف در دسترسی برای تولید ندارید.", show_alert: true });
+            return new Response('OK');
+          }
+
+          // کسر یک واحد از شمارشگر (به‌صورت اتمی، فقط اگر هنوز موجودی مثبت باشد)
+          const decRes = await db.prepare("UPDATE users SET referral_credits = referral_credits - 1 WHERE user_id = ? AND referral_credits > 0").bind(user_id).run();
+          if (!decRes || !decRes.meta || decRes.meta.changes === 0) {
+            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ شما کد تخفیف در دسترسی برای تولید ندارید.", show_alert: true });
+            return new Response('OK');
+          }
+
+          const newCode = await generateReferralDiscountCode(db, user_id, referralCfgGen);
+          if (!newCode) {
+            // در صورت شکست تولید کد، اعتبار کسرشده را بازمی‌گردانیم
+            await db.prepare("UPDATE users SET referral_credits = referral_credits + 1 WHERE user_id = ?").bind(user_id).run();
+            await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "❌ خطا در تولید کد. لطفاً دوباره تلاش کنید.", show_alert: true });
+            return new Response('OK');
+          }
+
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "✅ کد تخفیف شما ساخته شد!" });
+          const remainingCredits = credits - 1;
+          await sendMessage(chat_id, `🎉 <b>کد تخفیف شما با موفقیت ساخته شد!</b>\n\n🏷 کد: <code>${newCode}</code>\n📉 درصد تخفیف: ${referralCfgGen.discount_percent}٪\n⏳ اعتبار تا: ${getShamsiDatePlusDays(referralCfgGen.validity_days)}\n♻️ این کد فقط برای <b>یک بار</b> استفاده معتبر است.\n\n🎟 کدهای تخفیف باقی‌مانده شما: <b>${remainingCredits}</b> عدد`);
+
+          // به‌روزرسانی پیام شمارشگر (حذف دکمه اگر اعتبار تمام شده)
+          const updatedKb = remainingCredits > 0 ? { inline_keyboard: [[{ text: "🎁 تولید کد تخفیف", callback_data: "refgen_code" }]] } : { inline_keyboard: [] };
+          try {
+            await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: `🎟 شما در حال حاضر <b>${remainingCredits}</b> عدد کد تخفیف در دسترس دارید.`, reply_markup: updatedKb, parse_mode: "HTML" });
+          } catch (e) { /* در صورت خطا در ویرایش پیام، بی‌اهمیت است */ }
+          return new Response('OK');
+        }
+
         if (data === 'confirm_send_msg') {
           if (state && state.message_text) {
             const uRow = await db.prepare("SELECT first_name, username FROM users WHERE user_id = ?").bind(user_id).first();
@@ -2343,6 +2503,8 @@ export default {
           const userLink = getUserLink(targetUid, uRow ? uRow.first_name : "کاربر", uRow ? uRow.username : "");
           const refCountRow2 = await db.prepare("SELECT COUNT(*) as cnt FROM referrals WHERE referrer_id = ?").bind(targetUid).first();
           const referralCount2 = refCountRow2 ? refCountRow2.cnt : 0;
+          const refCreditsRow2 = await db.prepare("SELECT referral_credits FROM users WHERE user_id = ?").bind(targetUid).first();
+          const referralCredits2 = (refCreditsRow2 && refCreditsRow2.referral_credits) || 0;
           const workerData = await getWorkerStatus(targetSrv.cf_domain);
           const isKsActive = workerData.killSwitch === true;
           const isSingle = targetSrv.plan_type.includes('یک کاربره');
@@ -2367,7 +2529,8 @@ export default {
           mainMsg += `🆔 آیدی: <code>${targetUid}</code>\n`;
           mainMsg += `تعداد سرویس‌ها: ${srvList.length}\n`;
 
-          mainMsg += `🤝 تعداد دعوت‌شدگان: ${referralCount2} نفر\n\n`;
+          mainMsg += `🤝 تعداد دعوت‌شدگان: ${referralCount2} نفر\n`;
+          mainMsg += `🎟 کدهای تخفیف در دسترس (رفرال): ${referralCredits2} عدد\n\n`;
           
           mainMsg += `🌐 <b>آدرس ورکر:</b>\n<code>${pureWorkerUrl}/</code>\n\n`;
           mainMsg += `📊 <b>لینک پنل معمولی:</b>\n<code>${pureWorkerUrl}/login</code>\n\n`;
@@ -2569,6 +2732,31 @@ export default {
           const extraHint = (field === 'start_date' || field === 'end_date') ? "\n\nبرای پاک کردن تاریخ، علامت - را ارسال کنید." : "";
           await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
           await sendMessage(ADMIN_ID, `✏️ مقدار جدید برای <b>${fieldLabels[field] || field}</b> را ارسال کنید:${extraHint}`, pendingMenu());
+          return new Response('OK');
+        }
+
+        // ================= مدیریت سیستم دعوت دوستان =================
+        if (data === 'admreferral_toggle') {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const cfg = await getReferralConfig(db);
+          cfg.is_active = cfg.is_active ? 0 : 1;
+          await setSetting(db, 'referral_config', cfg);
+          const { msg, kb } = await renderReferralConfigMessage(db);
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: cfg.is_active ? "✅ فعال شد." : "🚫 غیرفعال شد." });
+          await callTelegram('editMessageText', { chat_id, message_id: msg_id, text: msg, reply_markup: kb, parse_mode: "HTML" });
+          return new Response('OK');
+        }
+
+        if (data.startsWith('admreferral_edit_')) {
+          if (user_id !== ADMIN_ID) return new Response('OK');
+          const field = data.replace('admreferral_edit_', '');
+          const cfg = await getReferralConfig(db);
+          const fieldLabels = { button_text: "متن دکمه", message_text: "متن پیام معرفی", discount_percent: "درصد تخفیف", validity_days: "اعتبار کد (روز)" };
+          const currentVal = field === 'discount_percent' ? `${cfg.discount_percent}٪` : (field === 'validity_days' ? `${cfg.validity_days} روز` : cfg[field]);
+          const hint = field === 'message_text' ? "\n\nℹ️ می‌توانید از <code>{percent}</code> و <code>{link}</code> در متن استفاده کنید." : "";
+          await setState(db, ADMIN_ID, { step: 'WAIT_REFERRAL_EDIT_VALUE', field });
+          await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
+          await sendMessage(ADMIN_ID, `✏️ مقدار جدید برای <b>${fieldLabels[field] || field}</b> را ارسال کنید:\n\n📌 مقدار فعلی:\n<code>${escapeHtml(String(currentVal))}</code>${hint}`, pendingMenu());
           return new Response('OK');
         }
 
