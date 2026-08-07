@@ -359,27 +359,23 @@ async function mainMenu(db, user_id) {
     keyboard.push([{ text: festivalCfg.button_text }]);
   }
 
-  keyboard.push([{ text: "🛒 خرید سرویس" }]);
-  keyboard.push([{ text: "📚 آموزش‌ها" }]);
-  keyboard.push([{ text: "📦 سرویس‌های من" }]);
+  keyboard.push([{ text: "🛒 خرید سرویس" }, { text: "📚 آموزش‌ها" }]);
+  keyboard.push([{ text: "📦 سرویس‌های من" }, { text: "👤 وضعیت من" }]);
 
   if (hasWorker) {
     keyboard.push([{ text: "🤝 دعوت دوستان (هدیه ۵ روزه)" }]);
   }
-  keyboard.push([{ text: "👤 وضعیت من" }]);
   keyboard.push([{ text: "📞 ارتباط با پشتیبانی" }]);
   return { keyboard, resize_keyboard: true };
 }
 
 function adminPanelMenu() {
-  // پنل اصلی و تنها پنل ادمین - همه دکمه‌ها تمام عرض
+  // پنل اصلی و تنها پنل ادمین
   return { 
     keyboard: [
-      [{ text: "📊 گزارش فروش" }],
+      [{ text: "📊 گزارش فروش" }, { text: "📖 راهنمای پنل مدیریت" }],
       [{ text: "👥 لیست کامل کاربران و خریدها" }],
-      [{ text: "🛠 مدیریت سرویس‌های کاربر" }],
-      [{ text: "📖 راهنمای پنل مدیریت" }],
-      [{ text: "📢 ارسال اطلاعیه" }],
+      [{ text: "🛠 مدیریت سرویس‌های کاربر" }, { text: "📢 ارسال اطلاعیه" }],
       [{ text: "⚙️ تنظیمات ربات" }]
     ], 
     resize_keyboard: true 
@@ -389,9 +385,8 @@ function adminPanelMenu() {
 function settingsMenu() {
   return {
     keyboard: [
-      [{ text: "🧩 مدیریت پلن‌های اشتراک" }],
+      [{ text: "🧩 مدیریت پلن‌های اشتراک" }, { text: "🎟 مدیریت کدهای تخفیف" }],
       [{ text: "🎁 مدیریت اکانت تست و جشنواره" }],
-      [{ text: "🎟 مدیریت کدهای تخفیف" }],
       [{ text: "🗑 مدیریت و پاک‌سازی داده‌ها" }],
       [{ text: "🔙 بازگشت به پنل مدیریت" }]
     ],
@@ -402,8 +397,7 @@ function settingsMenu() {
 // ================= پنل مدیریت اکانت تست و جشنواره =================
 function trialFestivalMenu() {
   return { inline_keyboard: [
-    [{ text: "🎁 تنظیمات اکانت تست", callback_data: "admtrialcfg" }],
-    [{ text: "🎉 تنظیمات جشنواره", callback_data: "admfestivalcfg" }]
+    [{ text: "🎁 تنظیمات اکانت تست", callback_data: "admtrialcfg" }, { text: "🎉 تنظیمات جشنواره", callback_data: "admfestivalcfg" }]
   ] };
 }
 
@@ -423,8 +417,7 @@ async function renderTrialConfigMessage(db) {
     [{ text: "🗓 تغییر روزهای تست بار اول", callback_data: "admtrial_edit_first_time_days" }],
     [{ text: "🔁 تغییر روزهای تست دفعات بعد", callback_data: "admtrial_edit_repeat_days" }],
     [{ text: "⏳ تغییر فاصله مجاز (روز)", callback_data: "admtrial_edit_cooldown_days" }],
-    [{ text: isSingle ? "👥 تغییر به چندکاربره" : "👤 تغییر به تک‌کاربره", callback_data: "admtrial_toggle_single" }],
-    [{ text: "🔙 بازگشت", callback_data: "admtrialfestival_menu" }]
+    [{ text: isSingle ? "👥 تغییر به چندکاربره" : "👤 تغییر به تک‌کاربره", callback_data: "admtrial_toggle_single" }, { text: "🔙 بازگشت", callback_data: "admtrialfestival_menu" }]
   ] };
   return { msg, kb };
 }
@@ -444,10 +437,8 @@ async function renderFestivalConfigMessage(db) {
     [{ text: cfg.is_active ? "🚫 غیرفعال کردن جشنواره" : "✅ فعال کردن جشنواره", callback_data: "admfestival_toggle" }],
     [{ text: "✏️ تغییر متن دکمه", callback_data: "admfestival_edit_button_text" }],
     [{ text: "🗓 تغییر مدت اعتبار (روز)", callback_data: "admfestival_edit_days" }],
-    [{ text: "📅 تنظیم تاریخ شروع", callback_data: "admfestival_edit_start_date" }],
-    [{ text: "📅 تنظیم تاریخ پایان", callback_data: "admfestival_edit_end_date" }],
-    [{ text: isSingle ? "👥 تغییر به چندکاربره" : "👤 تغییر به تک‌کاربره", callback_data: "admfestival_toggle_single" }],
-    [{ text: "🔙 بازگشت", callback_data: "admtrialfestival_menu" }]
+    [{ text: "📅 تنظیم تاریخ شروع", callback_data: "admfestival_edit_start_date" }, { text: "📅 تنظیم تاریخ پایان", callback_data: "admfestival_edit_end_date" }],
+    [{ text: isSingle ? "👥 تغییر به چندکاربره" : "👤 تغییر به تک‌کاربره", callback_data: "admfestival_toggle_single" }, { text: "🔙 بازگشت", callback_data: "admtrialfestival_menu" }]
   ] };
   return { msg, kb };
 }
@@ -456,10 +447,8 @@ async function renderFestivalConfigMessage(db) {
 function wipeOptionsMenu() {
   return { inline_keyboard: [
     [{ text: "👤 پاک کردن اطلاعات یک کاربر خاص", callback_data: "admwipe_user_prompt" }],
-    [{ text: "📦 پاک کردن همه سرویس‌ها", callback_data: "admwipe_ask_services" }],
-    [{ text: "👥 پاک کردن همه کاربران", callback_data: "admwipe_ask_users" }],
-    [{ text: "🎟 پاک کردن کدهای تخفیف", callback_data: "admwipe_ask_discounts" }],
-    [{ text: "🤝 پاک کردن رفرال‌ها", callback_data: "admwipe_ask_referrals" }],
+    [{ text: "📦 پاک کردن همه سرویس‌ها", callback_data: "admwipe_ask_services" }, { text: "👥 پاک کردن همه کاربران", callback_data: "admwipe_ask_users" }],
+    [{ text: "🎟 پاک کردن کدهای تخفیف", callback_data: "admwipe_ask_discounts" }, { text: "🤝 پاک کردن رفرال‌ها", callback_data: "admwipe_ask_referrals" }],
     [{ text: "⏳ پاک کردن وضعیت‌های در حال پردازش", callback_data: "admwipe_ask_user_states" }],
     [{ text: "🌐 پاک کردن دامنه‌های ذخیره‌شده ادمین", callback_data: "admwipe_ask_admin_domains" }],
     [{ text: "🗑 پاک کردن کامل کل دیتابیس", callback_data: "admwipe_ask_all" }]
@@ -525,10 +514,8 @@ async function renderPlansListMessage(db) {
 function planEditFieldsKeyboard(planId) {
   return {
     inline_keyboard: [
-      [{ text: "✏️ نام دکمه", callback_data: `admeditplanfield_${planId}_label` }],
-      [{ text: "⏱ مدت اعتبار (روز)", callback_data: `admeditplanfield_${planId}_days` }],
-      [{ text: "👤 قیمت تک‌کاربره", callback_data: `admeditplanfield_${planId}_price_single` }],
-      [{ text: "👥 قیمت چندکاربره", callback_data: `admeditplanfield_${planId}_price_multi` }],
+      [{ text: "✏️ نام دکمه", callback_data: `admeditplanfield_${planId}_label` }, { text: "⏱ مدت اعتبار (روز)", callback_data: `admeditplanfield_${planId}_days` }],
+      [{ text: "👤 قیمت تک‌کاربره", callback_data: `admeditplanfield_${planId}_price_single` }, { text: "👥 قیمت چندکاربره", callback_data: `admeditplanfield_${planId}_price_multi` }],
       [{ text: "⏳ تاریخ پایان پیشنهاد (اختیاری)", callback_data: `admeditplanfield_${planId}_expire_date_shamsi` }],
       [{ text: "🔙 بازگشت به لیست پلن‌ها", callback_data: "admplanslist" }]
     ]
@@ -538,10 +525,8 @@ function planEditFieldsKeyboard(planId) {
 function adminServiceKeyboard(isSingle, isBlocked) {
   return { 
     keyboard: [
-      [{ text: "⏳ صفر کردن زمان" }],
-      [{ text: "➕ تمدید / شارژ" }],
-      [{ text: isSingle ? "👥 تبدیل به چندکاربره" : "👤 تبدیل به تک‌کاربره" }],
-      [{ text: isBlocked ? "✅ وصل فوری" : "🛑 قطع فوری" }],
+      [{ text: "⏳ صفر کردن زمان" }, { text: "➕ تمدید / شارژ" }],
+      [{ text: isSingle ? "👥 تبدیل به چندکاربره" : "👤 تبدیل به تک‌کاربره" }, { text: isBlocked ? "✅ وصل فوری" : "🛑 قطع فوری" }],
       [{ text: "✏️ ویرایش ورکر" }],
       [{ text: "🔙 بازگشت به پنل مدیریت" }]
     ], 
@@ -550,7 +535,7 @@ function adminServiceKeyboard(isSingle, isBlocked) {
 }
 
 function backAndSupportKeyboard() {
-  return { keyboard: [[{ text: "🔙 مرحله قبل" }], [{ text: "🏠 بازگشت به منوی اصلی" }], [{ text: "📞 ارتباط با پشتیبانی" }]], resize_keyboard: true };
+  return { keyboard: [[{ text: "🔙 مرحله قبل" }, { text: "🏠 بازگشت به منوی اصلی" }], [{ text: "📞 ارتباط با پشتیبانی" }]], resize_keyboard: true };
 }
 
 function pendingMenu() {
@@ -562,8 +547,7 @@ function tutorialsMenu() {
     keyboard: [
       [{ text: "🚀 آموزش برنامه v2ray برای نصب کانفیگ" }],
       [{ text: "📥 آموزش برنامه v2box برای نصب کانفیگ" }],
-      [{ text: "💬 راهنمای ارسال پیام به پشتیبانی" }],
-      [{ text: "🏠 بازگشت به منوی اصلی" }]
+      [{ text: "💬 راهنمای ارسال پیام به پشتیبانی" }, { text: "🏠 بازگشت به منوی اصلی" }]
     ], resize_keyboard: true
   };
 }
@@ -1082,8 +1066,7 @@ export default {
           const isSingle = (state.type && state.type.includes('یک کاربره')) ? '1' : '0';
 
           const admMarkup = { inline_keyboard: [
-              [{ text: "✅ تایید پرداختی و شارژ اکانت", callback_data: `admaprv_buy_${user_id}_${state.days}_0_${isSingle}` }],
-              [{ text: "❌ رد کردن درخواست", callback_data: `admrej_${user_id}` }]
+              [{ text: "✅ تایید پرداختی و شارژ اکانت", callback_data: `admaprv_buy_${user_id}_${state.days}_0_${isSingle}` }, { text: "❌ رد کردن درخواست", callback_data: `admrej_${user_id}` }]
           ] };
 
           if (state.admin_message_id) {
@@ -1470,8 +1453,7 @@ export default {
 
             const admText = `🎉 <b>درخواست جشنواره (${newState.type})</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>${workerText}`;
             const admKb = { inline_keyboard: [
-                [{ text: "✅ تایید و ارسال لینک جشنواره", callback_data: `admaprv_festival_${user_id}_${fDays}_0_${newState.user_type}` }],
-                [{ text: "❌ رد کردن", callback_data: `admrej_${user_id}` }]
+                [{ text: "✅ تایید و ارسال لینک جشنواره", callback_data: `admaprv_festival_${user_id}_${fDays}_0_${newState.user_type}` }, { text: "❌ رد کردن", callback_data: `admrej_${user_id}` }]
             ]};
 
             const adminMsgRes = await callTelegram('sendMessage', { chat_id: ADMIN_ID, text: admText, reply_markup: admKb, parse_mode: "HTML" });
@@ -1507,8 +1489,7 @@ export default {
           const isSingle = info.type.includes('یک کاربره') ? '1' : '0';
           
           const admMarkup = { inline_keyboard: [
-              [{ text: "✅ تایید پرداختی و شارژ اکانت", callback_data: `admaprv_buy_${user_id}_${info.days}_0_${isSingle}` }],
-              [{ text: "❌ رد کردن درخواست", callback_data: `admrej_${user_id}` }]
+              [{ text: "✅ تایید پرداختی و شارژ اکانت", callback_data: `admaprv_buy_${user_id}_${info.days}_0_${isSingle}` }, { text: "❌ رد کردن درخواست", callback_data: `admrej_${user_id}` }]
           ] };
 
           state.step = 'PENDING_ADMIN';
