@@ -349,6 +349,11 @@ async function mainMenu(db, user_id) {
 
   const keyboard = [];
 
+  // 🛒 خرید سرویس همیشه اولین دکمه است
+  keyboard.push([{ text: "🛒 خرید سرویس" }]);
+
+  keyboard.push([{ text: "📦 سرویس‌های من" }, { text: "👤 وضعیت من" }]);
+
   // دکمه اکانت تست فقط زمانی نمایش داده می‌شود که ادمین آن را فعال کرده باشد
   if (trialCfg.is_active) {
     keyboard.push([{ text: trialCfg.button_text }]);
@@ -359,8 +364,7 @@ async function mainMenu(db, user_id) {
     keyboard.push([{ text: festivalCfg.button_text }]);
   }
 
-  keyboard.push([{ text: "🛒 خرید سرویس" }, { text: "📚 آموزش‌ها" }]);
-  keyboard.push([{ text: "📦 سرویس‌های من" }, { text: "👤 وضعیت من" }]);
+  keyboard.push([{ text: "📚 آموزش‌ها" }]);
 
   if (hasWorker) {
     keyboard.push([{ text: "🤝 دعوت دوستان (هدیه ۵ روزه)" }]);
