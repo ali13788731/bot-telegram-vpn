@@ -581,7 +581,7 @@ const FIXED_MENU_BUTTON_TEXTS = new Set([
 
 // دکمه‌ها را بر اساس طول متن، خودکار در ردیف می‌چیند:
 // متن کوتاه -> کنار هم (تا سقف maxPerRow) | متن بلند -> تنها و تمام‌عرض
-function autoRowKeyboard(buttons, maxRowChars = 26, maxPerRow = 3) {
+function autoRowKeyboard(buttons, maxRowChars = 52, maxPerRow = 3) {
   const rows = [];
   let currentRow = [];
   let currentLen = 0;
@@ -589,7 +589,7 @@ function autoRowKeyboard(buttons, maxRowChars = 26, maxPerRow = 3) {
   for (const btn of buttons) {
     const len = btn.text.length;
     const wouldExceed = currentLen + len > maxRowChars || currentRow.length >= maxPerRow;
-    const tooLongAlone = len > maxRowChars * 0.7;
+    const tooLongAlone = len > maxRowChars * 0.9;
 
     if (currentRow.length > 0 && (wouldExceed || tooLongAlone)) {
       rows.push(currentRow);
