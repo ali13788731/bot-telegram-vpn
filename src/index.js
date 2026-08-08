@@ -132,14 +132,14 @@ function getShamsiDatePlusDays(days) {
 }
 
 // تولید یک کد تخفیف تصادفیِ یکتا برای سیستم دعوت دوستان و ثبت آن در جدول discounts
+// توجه: کدهای تخفیف (از جمله کدهای رفرال) تاریخ انقضا ندارند
 async function generateReferralDiscountCode(db, userId, cfg) {
-  const expireDate = getShamsiDatePlusDays(cfg.validity_days);
   for (let attempt = 0; attempt < 5; attempt++) {
     const rand = Math.random().toString(36).substring(2, 8).toUpperCase();
     const code = `REF${userId}${rand}`;
     try {
-      await db.prepare("INSERT INTO discounts (code, percent, max_uses, expire_date_shamsi, generated_by) VALUES (?, ?, 1, ?, ?)")
-        .bind(code, cfg.discount_percent, expireDate, userId).run();
+      await db.prepare("INSERT INTO discounts (code, percent, max_uses, expire_date_shamsi, generated_by) VALUES (?, ?, 1, NULL, ?)")
+        .bind(code, cfg.discount_percent, userId).run();
       return code;
     } catch (e) {
       // برخورد کد تصادفی (بسیار نامحتمل) - تلاش دوباره با کد جدید
@@ -528,15 +528,14 @@ async function renderReferralConfigMessage(db) {
     `🔘 وضعیت: ${cfg.is_active ? '✅ فعال' : '🚫 غیرفعال'}\n` +
     `✏️ متن دکمه: ${escapeHtml(cfg.button_text)}\n` +
     `📉 درصد تخفیف هر کد: <b>${cfg.discount_percent}٪</b>\n` +
-    `⏳ اعتبار کد تولیدشده: <b>${cfg.validity_days}</b> روز\n` +
+    `♾ اعتبار کد تولیدشده: بدون تاریخ انقضا\n` +
     `📝 متن پیام معرفی:\n<code>${escapeHtml(cfg.message_text)}</code>\n\n` +
     `ℹ️ در متن پیام می‌توانید از <code>{percent}</code> (درصد تخفیف) و <code>{link}</code> (لینک اختصاصی دعوت) استفاده کنید.`;
   const kb = { inline_keyboard: [
     [{ text: cfg.is_active ? "🚫 غیرفعال کردن سیستم دعوت" : "✅ فعال کردن سیستم دعوت", callback_data: "admreferral_toggle" }],
     [{ text: "✏️ تغییر متن دکمه", callback_data: "admreferral_edit_button_text" }],
     [{ text: "📝 تغییر متن پیام معرفی", callback_data: "admreferral_edit_message_text" }],
-    [{ text: "📉 تغییر درصد تخفیف", callback_data: "admreferral_edit_discount_percent" }],
-    [{ text: "⏳ تغییر اعتبار کد (روز)", callback_data: "admreferral_edit_validity_days" }]
+    [{ text: "📉 تغییر درصد تخفیف", callback_data: "admreferral_edit_discount_percent" }]
   ] };
   return { msg, kb };
 }
@@ -710,6 +709,21 @@ async function refundWalletIfPending(db, user_id, state) {
   return 0;
 }
 
+// ساخت خطوط جزئیات کامل قیمت (قیمت اصلی، کد تخفیف در صورت استفاده، مبلغ تخفیف، مبلغ نهایی) برای نمایش دقیق به ادمین
+function buildPriceDetailsForAdmin(state) {
+  const basePrice = (state.base_price != null) ? state.base_price : (state.price_paid || 0);
+  const finalPrice = (state.price_paid != null) ? state.price_paid : basePrice;
+  let lines = `💵 قیمت اصلی پلن: <b>${basePrice.toLocaleString('fa-IR')} تومان</b>\n`;
+  if (state.discount_code) {
+    lines += `🏷 کد تخفیف استفاده‌شده: <code>${state.discount_code}</code> (${state.discount_percent}٪)\n`;
+    lines += `➖ مبلغ تخفیف اعمال‌شده: <b>${(state.discount_amount || 0).toLocaleString('fa-IR')} تومان</b>\n`;
+  } else {
+    lines += `🏷 کد تخفیف: استفاده نشده\n`;
+  }
+  lines += `💰 مبلغ نهایی قابل پرداخت: <b>${finalPrice.toLocaleString('fa-IR')} تومان</b>\n`;
+  return lines;
+}
+
 // ================= پردازش نهایی پرداخت خرید سرویس با در نظر گرفتن موجودی کیف پول =================
 // finalPrice: مبلغ نهایی قابل پرداخت این سفارش (پس از اعمال کد تخفیف در صورت وجود)
 // - اگر موجودی کیف پول کل مبلغ را پوشش دهد: مرحله ارسال شماره کارت/رسید کاملاً حذف و درخواست مستقیماً برای تایید ادمین ارسال می‌شود.
@@ -743,7 +757,7 @@ async function proceedToPaymentStep(db, chat_id, user_id, state, plan, finalPric
     const workerText = lastSrv ? `\n🌐 <b>ورکر فعلی:</b> <code>${lastSrv.cf_domain}</code>` : `\n🌐 <b>ورکر فعلی:</b> ندارد (نیاز به ثبت ورکر جدید)`;
     const isSingle = state.type.includes('یک کاربره') ? '1' : '0';
 
-    const admText = `💰 <b>درخواست خرید - پرداخت کامل از کیف پول</b>\n📦 پلن: ${escapeHtml(plan.label)} (${state.type})\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>\n\n💵 مبلغ کل سرویس: ${finalPrice.toLocaleString('fa-IR')} تومان\n💰 مبلغ کسر شده از کیف پول: ${walletUsed.toLocaleString('fa-IR')} تومان\n💳 مبلغ واریزی کارت به کارت: ۰ تومان (نیازی نبود)${workerText}`;
+    const admText = `💰 <b>درخواست خرید - پرداخت کامل از کیف پول</b>\n📦 پلن: ${escapeHtml(plan.label)} (${state.type})\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>\n\n${buildPriceDetailsForAdmin(state)}💰 مبلغ کسر شده از کیف پول: ${walletUsed.toLocaleString('fa-IR')} تومان\n💳 مبلغ واریزی کارت به کارت: ۰ تومان (نیازی نبود)${workerText}`;
     const admKb = { inline_keyboard: [
         [{ text: "✅ تایید و ارسال لینک", callback_data: `admaprv_buy_${user_id}_${plan.days}_0_${isSingle}` }],
         [{ text: "❌ رد کردن", callback_data: `admrej_${user_id}` }]
@@ -1242,7 +1256,7 @@ export default {
           const walletInfoTextEdit = (state.wallet_used > 0)
             ? `💰 مبلغ کسر شده از کیف پول: ${state.wallet_used.toLocaleString('fa-IR')} تومان\n💳 مبلغ واریزی کارت به کارت (رسید پیوست): ${(state.remaining_price != null ? state.remaining_price : state.price_paid || 0).toLocaleString('fa-IR')} تومان\n`
             : "";
-          let caption = `🧾 <b>درخواست پرداخت جدید (ویرایش شده توسط کاربر)</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>\n📅 <b>زمان ویرایش:</b> ${getShamsiNow()}\n📦 پلن: ${planDaysLabel(state.days)} - ${state.type || 'سفارشی'}\n${walletInfoTextEdit}${workerText}`;
+          let caption = `🧾 <b>درخواست پرداخت جدید (ویرایش شده توسط کاربر)</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>\n📅 <b>زمان ویرایش:</b> ${getShamsiNow()}\n📦 پلن: ${planDaysLabel(state.days)} - ${state.type || 'سفارشی'}\n\n${buildPriceDetailsForAdmin(state)}${walletInfoTextEdit}${workerText}`;
           const isSingle = (state.type && state.type.includes('یک کاربره')) ? '1' : '0';
 
           const admMarkup = { inline_keyboard: [
@@ -1742,7 +1756,7 @@ export default {
             ? `💰 مبلغ کسر شده از کیف پول: ${info.wallet_used.toLocaleString('fa-IR')} تومان\n💳 مبلغ واریزی کارت به کارت (رسید پیوست): ${(info.remaining_price != null ? info.remaining_price : info.price_paid).toLocaleString('fa-IR')} تومان\n`
             : "";
 
-          let caption = `🧾 <b>درخواست پرداخت جدید</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>\n📅 <b>زمان ثبت:</b> ${getShamsiNow()}\n📦 پلن: ${info.plan_label || planDaysLabel(info.days)} - ${info.type}\n💵 مبلغ کل: ${(info.price_paid || 0).toLocaleString('fa-IR')} تومان\n${walletInfoText}${workerText}`;
+          let caption = `🧾 <b>درخواست پرداخت جدید</b>\n👤 کاربر: ${userLink}\n🆔 آیدی: <code>${user_id}</code>\n📅 <b>زمان ثبت:</b> ${getShamsiNow()}\n📦 پلن: ${info.plan_label || planDaysLabel(info.days)} - ${info.type}\n\n${buildPriceDetailsForAdmin(info)}${walletInfoText}${workerText}`;
           const isSingle = info.type.includes('یک کاربره') ? '1' : '0';
           
           const admMarkup = { inline_keyboard: [
@@ -2050,7 +2064,7 @@ export default {
           } else {
             discounts.forEach(d => {
               const sourceTag = d.generated_by ? `\n🤝 منبع: کد رفرالِ کاربر <code>${d.generated_by}</code>` : '';
-              msg += `🏷 <b>کد:</b> <code>${d.code}</code>\n📉 درصد: ${d.percent}%\n👥 استفاده شده: ${d.used_count} از ${d.max_uses}\n⏳ انقضا: ${d.expire_date_shamsi}${sourceTag}\n➖➖➖➖\n`;
+              msg += `🏷 <b>کد:</b> <code>${d.code}</code>\n📉 درصد: ${d.percent}%\n👥 استفاده شده: ${d.used_count} از ${d.max_uses}\n♾ بدون تاریخ انقضا${sourceTag}\n➖➖➖➖\n`;
             });
           }
           
@@ -2061,14 +2075,14 @@ export default {
 
         // دریافت اطلاعات کد تخفیف جدید از ادمین
         if (user_id === ADMIN_ID && state && state.step === 'WAIT_DISCOUNT_DATA') {
-          // فرمت مورد انتظار: کد-درصد-تعداد-تاریخ
+          // فرمت مورد انتظار: کد-درصد-تعداد (کدهای تخفیف تاریخ انقضا ندارند)
           const parts = text.split('-');
-          if (parts.length !== 4) {
-            await sendMessage(ADMIN_ID, "❌ فرمت وارد شده اشتباه است. لطفاً دقیقاً مانند مثال ارسال کنید:\n\n<code>NOROUZ-20-50-1403/01/15</code>", pendingMenu());
+          if (parts.length !== 3) {
+            await sendMessage(ADMIN_ID, "❌ فرمت وارد شده اشتباه است. لطفاً دقیقاً مانند مثال ارسال کنید:\n\n<code>NOROUZ-20-50</code>", pendingMenu());
             return new Response('OK');
           }
           
-          const [code, percentStr, maxUsesStr, expireDate] = parts;
+          const [code, percentStr, maxUsesStr] = parts;
           const percent = parseInt(percentStr);
           const maxUses = parseInt(maxUsesStr);
           
@@ -2078,9 +2092,9 @@ export default {
           }
 
           try {
-            await db.prepare("INSERT INTO discounts (code, percent, max_uses, expire_date_shamsi) VALUES (?, ?, ?, ?)").bind(code.trim(), percent, maxUses, expireDate.trim()).run();
+            await db.prepare("INSERT INTO discounts (code, percent, max_uses, expire_date_shamsi) VALUES (?, ?, ?, NULL)").bind(code.trim(), percent, maxUses).run();
             await clearState(db, ADMIN_ID);
-            await sendMessage(ADMIN_ID, `✅ کد تخفیف <b>${code}</b> با موفقیت ثبت شد!`, settingsMenu());
+            await sendMessage(ADMIN_ID, `✅ کد تخفیف <b>${code}</b> با موفقیت ثبت شد! (بدون تاریخ انقضا)`, settingsMenu());
           } catch (e) {
             await sendMessage(ADMIN_ID, "❌ این کد تخفیف قبلاً ثبت شده است یا خطایی رخ داد.", pendingMenu());
           }
@@ -2332,8 +2346,6 @@ export default {
         // بررسی کد تخفیف ارسال شده توسط کاربر
         if (state && state.step === 'WAIT_DISCOUNT_CODE' && user_id !== ADMIN_ID) {
           const codeInput = text.trim();
-          const shamsiNow = getShamsiNow().split(/[ ,-]/)[0]; 
-          
           const discount = await db.prepare("SELECT * FROM discounts WHERE code = ?").bind(codeInput).first();
           
           if (!discount) {
@@ -2345,11 +2357,7 @@ export default {
              await sendMessage(chat_id, "❌ ظرفیت استفاده از این کد تخفیف به پایان رسیده است.");
              return new Response('OK');
           }
-          
-          if (discount.expire_date_shamsi < shamsiNow) {
-             await sendMessage(chat_id, "❌ مهلت استفاده از این کد تخفیف به پایان رسیده است.");
-             return new Response('OK');
-          }
+          // توجه: کدهای تخفیف تاریخ انقضا ندارند، بنابراین بررسی انقضا حذف شده است.
 
           const plan = await getPlanById(db, state.plan_id);
           if (!plan) {
@@ -2363,6 +2371,13 @@ export default {
           const finalPrice = basePrice - discountAmount;
 
           await db.prepare("UPDATE discounts SET used_count = used_count + 1 WHERE id = ?").bind(discount.id).run();
+
+          // ذخیره اطلاعات کد تخفیف روی state تا در پیام‌های اطلاع‌رسانی به ادمین دقیقاً نمایش داده شود
+          state.discount_code = discount.code;
+          state.discount_percent = discount.percent;
+          state.base_price = basePrice;
+          state.discount_amount = discountAmount;
+          await setState(db, user_id, state);
 
           await sendMessage(chat_id, `🎉 <b>کد تخفیف ${discount.percent} درصدی اعمال شد!</b>\n💵 قیمت اصلی: <s>${basePrice.toLocaleString('fa-IR')} تومان</s>\n🎁 مبلغ نهایی: <b>${finalPrice.toLocaleString('fa-IR')} تومان</b>`);
           await proceedToPaymentStep(db, chat_id, user_id, state, plan, finalPrice, msg.from || {});
@@ -2480,7 +2495,7 @@ export default {
 
           await callTelegram('answerCallbackQuery', { callback_query_id: call.id, text: "✅ کد تخفیف شما ساخته شد!" });
           const remainingCredits = credits - 1;
-          await sendMessage(chat_id, `🎉 <b>کد تخفیف شما با موفقیت ساخته شد!</b>\n\n🏷 کد: <code>${newCode}</code>\n📉 درصد تخفیف: ${referralCfgGen.discount_percent}٪\n⏳ اعتبار تا: ${getShamsiDatePlusDays(referralCfgGen.validity_days)}\n♻️ این کد فقط برای <b>یک بار</b> استفاده معتبر است.\n\n🎟 کدهای تخفیف باقی‌مانده شما: <b>${remainingCredits}</b> عدد`);
+          await sendMessage(chat_id, `🎉 <b>کد تخفیف شما با موفقیت ساخته شد!</b>\n\n🏷 کد: <code>${newCode}</code>\n📉 درصد تخفیف: ${referralCfgGen.discount_percent}٪\n♾ بدون تاریخ انقضا\n♻️ این کد فقط برای <b>یک بار</b> استفاده معتبر است.\n\n🎟 کدهای تخفیف باقی‌مانده شما: <b>${remainingCredits}</b> عدد`);
 
           // به‌روزرسانی پیام شمارشگر (حذف دکمه اگر اعتبار تمام شده)
           const updatedKb = remainingCredits > 0 ? { inline_keyboard: [[{ text: "🎁 تولید کد تخفیف", callback_data: "refgen_code" }]] } : { inline_keyboard: [] };
@@ -3014,7 +3029,7 @@ export default {
           if (user_id !== ADMIN_ID) return new Response('OK');
           await setState(db, ADMIN_ID, { step: 'WAIT_DISCOUNT_DATA' });
           await callTelegram('answerCallbackQuery', { callback_query_id: call.id });
-          const guide = `➕ <b>افزودن کد تخفیف جدید</b>\n\nلطفاً اطلاعات کد تخفیف را با خط تیره (-) و دقیقاً با فرمت زیر بفرستید:\n\n<code>کد-درصدتخفیف-تعدادمجاز-تاریخ انقضا</code>\n\n📌 <b>مثال:</b>\n<code>VIP20-20-100-1403/12/29</code>\n\n(یعنی کد VIP20 با 20 درصد تخفیف، برای 100 نفر، تا تاریخ 1403/12/29)`;
+          const guide = `➕ <b>افزودن کد تخفیف جدید</b>\n\nلطفاً اطلاعات کد تخفیف را با خط تیره (-) و دقیقاً با فرمت زیر بفرستید:\n\n<code>کد-درصدتخفیف-تعدادمجاز</code>\n\n📌 <b>مثال:</b>\n<code>VIP20-20-100</code>\n\n(یعنی کد VIP20 با 20 درصد تخفیف، برای 100 نفر قابل استفاده)\n\n♾ <i>کدهای تخفیف تاریخ انقضا ندارند و تا زمانی که ظرفیت استفاده تمام نشود معتبر می‌مانند.</i>`;
           await sendMessage(ADMIN_ID, guide, pendingMenu());
           return new Response('OK');
         }
@@ -3232,6 +3247,11 @@ export default {
           }
 
           const planPrice = state.user_type === '1' ? (plan.price_single || 0) : (plan.price_multi || 0);
+          // بدون کد تخفیف: پاک کردن هرگونه اطلاعات تخفیفِ باقی‌مانده از تلاش‌های قبلی
+          state.discount_code = null;
+          state.discount_percent = null;
+          state.base_price = planPrice;
+          state.discount_amount = 0;
           await callTelegram('deleteMessage', { chat_id, message_id: msg_id });
           await proceedToPaymentStep(db, chat_id, user_id, state, plan, planPrice, call.from || {});
           return new Response('OK');
